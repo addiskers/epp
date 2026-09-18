@@ -37,7 +37,10 @@ number's Answer URL at `PUBLIC_URL/plivo/answer`.
 1. **Greeting** — "Welcome to EPP Composites Support Helpline. Please tell me your preferred
    language." The caller picks one of the twelve enabled languages and the rest of the call is
    in it.
-2. **Caller type** — customer, vendor or employee.
+2. **Caller type** — customer, vendor or employee. (Decision, 18 Sep 2026: language is asked
+   *before* caller type, so the caller-type question is already in the caller's language. The
+   requirements text placed caller type in the greeting itself; the order was chosen
+   deliberately and can be reversed on the Agent page without a code change.)
 3. **Details** — name; company (customer) / vendor code (vendor) / employee ID, department,
    plant (employee); contact number.
 4. **The concern** — the caller explains uninterrupted; the agent asks up to a few context-aware
