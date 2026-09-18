@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 # Bumped whenever the schema changes shape. Stamped into PRAGMA user_version.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _DATA_DIR = os.getenv("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
 _DB_PATH = os.path.join(_DATA_DIR, "epp.db")
@@ -33,6 +33,8 @@ ROLES = ("admin", "dept_user")
 CALLER_TYPES = ("customer", "vendor", "employee")
 TICKET_STATUSES = ("open", "under_review", "escalated", "resolved", "closed")
 PRIORITIES = ("high", "medium", "low")
+CAMPAIGN_TYPES = ("intake", "followup", "announcement")
+CAMPAIGN_STATUSES = ("scheduled", "live", "completed", "cancelled")
 
 
 def _now() -> str:
@@ -174,6 +176,65 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id, created_at DESC);
+
+-- Outbound campaigns ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS contacts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL DEFAULT '',
+    phone       TEXT NOT NULL UNIQUE,                 -- E.164
+    caller_type TEXT NOT NULL DEFAULT '',             -- customer | vendor | employee | ''
+    notes       TEXT NOT NULL DEFAULT '',
+    source      TEXT NOT NULL DEFAULT 'manual',       -- upload | manual
+    status      TEXT NOT NULL DEFAULT 'valid',        -- valid | invalid
+    created_by  INTEGER,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts(name);
+
+CREATE TABLE IF NOT EXISTS campaigns (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                 TEXT NOT NULL,
+    campaign_type        TEXT NOT NULL,               -- intake | followup | announcement
+    message              TEXT NOT NULL DEFAULT '',    -- announcement text
+    status               TEXT NOT NULL DEFAULT 'scheduled',  -- scheduled | live | completed | cancelled
+    start_at             TEXT NOT NULL,               -- ISO-8601 UTC
+    created_by           INTEGER,
+    contact_count        INTEGER NOT NULL DEFAULT 0,
+    callback_delay_hours INTEGER NOT NULL DEFAULT 4,
+    callback_max_per_day INTEGER NOT NULL DEFAULT 3,
+    callback_days        INTEGER NOT NULL DEFAULT 1,
+    call_start_min       INTEGER NOT NULL DEFAULT 540,   -- calling hours, minutes since midnight IST
+    call_end_min         INTEGER NOT NULL DEFAULT 1260,
+    done_count           INTEGER NOT NULL DEFAULT 0,
+    failed_count         INTEGER NOT NULL DEFAULT 0,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_campaigns_status ON campaigns(status);
+
+CREATE TABLE IF NOT EXISTS campaign_contacts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id     INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+    contact_id      INTEGER,
+    ticket_id       TEXT,                              -- follow-up campaigns: the ticket being followed up
+    phone           TEXT NOT NULL,
+    name            TEXT NOT NULL DEFAULT '',
+    call_status     TEXT NOT NULL DEFAULT 'pending',  -- pending | calling | done | failed | cancelled
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    day_attempts    INTEGER NOT NULL DEFAULT 0,
+    day_key         TEXT,                              -- YYYY-MM-DD of the day_attempts window
+    next_attempt_at TEXT,                              -- retry gate (ISO)
+    last_call_id    TEXT,
+    last_attempt_at TEXT,
+    last_error      TEXT,
+    outcome         TEXT,                              -- record_outcome value, or ticket_created
+    remark          TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cc_campaign ON campaign_contacts(campaign_id);
+CREATE INDEX IF NOT EXISTS idx_cc_due ON campaign_contacts(call_status, next_attempt_at);
 """
 
 
@@ -675,6 +736,265 @@ def add_ticket_event(ticket_id: str, kind: str, actor_type="system", actor_user_
 
 def list_ticket_events(ticket_id: str) -> list[dict]:
     return _rows("SELECT * FROM ticket_events WHERE ticket_id = ? ORDER BY id", (str(ticket_id),))
+
+
+# ---------------------------------------------------------------------------------------
+# Contacts pool (for outbound campaigns)
+# ---------------------------------------------------------------------------------------
+def add_contact(name, phone, caller_type="", notes="", source="manual", status="valid", created_by=None):
+    """Upsert by phone. Returns (id, created). A blank name/notes never wipes a stored one."""
+    now = _now()
+    existing = _one("SELECT id FROM contacts WHERE phone = ?", (phone,))
+    if existing:
+        _exec("UPDATE contacts SET name = COALESCE(NULLIF(?, ''), name), "
+              "caller_type = COALESCE(NULLIF(?, ''), caller_type), notes = COALESCE(NULLIF(?, ''), notes), "
+              "status = ?, updated_at = ? WHERE id = ?",
+              (name or "", caller_type or "", notes or "", status, now, existing["id"]))
+        return existing["id"], False
+    cid = _exec("INSERT INTO contacts (name, phone, caller_type, notes, source, status, created_by, "
+                "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (name or "", phone, caller_type or "", notes or "", source, status, created_by, now, now))
+    return cid, True
+
+
+def bulk_upsert_contacts(rows, source="upload", created_by=None):
+    """rows: (name, phone, status, extra_dict). Returns (added, updated)."""
+    rows = list(rows)
+    if not rows:
+        return 0, 0
+    now = _now()
+    conn = get_conn()
+    with _lock:
+        existing = {r["phone"] for r in conn.execute("SELECT phone FROM contacts").fetchall()}
+        conn.executemany(
+            "INSERT INTO contacts (name, phone, caller_type, notes, source, status, created_by, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(phone) DO UPDATE SET "
+            "name = COALESCE(NULLIF(excluded.name, ''), contacts.name), "
+            "caller_type = COALESCE(NULLIF(excluded.caller_type, ''), contacts.caller_type), "
+            "notes = COALESCE(NULLIF(excluded.notes, ''), contacts.notes), "
+            "status = excluded.status, updated_at = excluded.updated_at",
+            [(nm or "", ph, (x or {}).get("caller_type") or "", (x or {}).get("notes") or "",
+              source, st, created_by, now, now) for (nm, ph, st, x) in rows])
+        conn.commit()
+    added = sum(1 for r in rows if r[1] not in existing)
+    return added, len(rows) - added
+
+
+def list_contacts(q=None, caller_type=None, status=None, limit=25, offset=0):
+    where, params = [], []
+    if q:
+        where.append("(name LIKE ? OR phone LIKE ? OR notes LIKE ?)")
+        params += [f"%{q}%"] * 3
+    if caller_type:
+        where.append("caller_type = ?")
+        params.append(caller_type)
+    if status:
+        where.append("status = ?")
+        params.append(status)
+    wsql = ("WHERE " + " AND ".join(where)) if where else ""
+    total = _one(f"SELECT COUNT(*) c FROM contacts {wsql}", tuple(params))["c"]
+    rows = _rows(f"SELECT * FROM contacts {wsql} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                 tuple(params) + (int(limit), int(offset)))
+    return {"items": rows, "total": int(total)}
+
+
+def get_contacts_by_ids(ids):
+    ids = [int(i) for i in ids if i]
+    if not ids:
+        return []
+    return _rows(f"SELECT * FROM contacts WHERE id IN ({','.join('?' * len(ids))}) ORDER BY id", tuple(ids))
+
+
+def delete_contacts(ids) -> int:
+    ids = [int(i) for i in ids if i]
+    if not ids:
+        return 0
+    conn = get_conn()
+    with _lock:
+        cur = conn.execute(f"DELETE FROM contacts WHERE id IN ({','.join('?' * len(ids))})", tuple(ids))
+        conn.commit()
+        return cur.rowcount
+
+
+def contact_by_phone(phone):
+    return _one("SELECT * FROM contacts WHERE phone = ?", (str(phone or ""),))
+
+
+# ---------------------------------------------------------------------------------------
+# Campaigns
+# ---------------------------------------------------------------------------------------
+def create_campaign(name, campaign_type, start_at, created_by, *, message="", status="scheduled",
+                    callback_delay_hours=4, callback_max_per_day=3, callback_days=1,
+                    call_start_min=540, call_end_min=1260) -> int:
+    now = _now()
+    return _exec(
+        "INSERT INTO campaigns (name, campaign_type, message, status, start_at, created_by, contact_count, "
+        "callback_delay_hours, callback_max_per_day, callback_days, call_start_min, call_end_min, "
+        "created_at, updated_at) VALUES (?,?,?,?,?,?,0,?,?,?,?,?,?,?)",
+        (name, campaign_type, message or "", status, start_at, created_by, int(callback_delay_hours),
+         int(callback_max_per_day), int(callback_days), int(call_start_min), int(call_end_min), now, now))
+
+
+def add_campaign_contacts(campaign_id, rows) -> int:
+    """rows: dicts with phone (required), name, contact_id, ticket_id. Returns the final count."""
+    rows = list(rows)
+    now = _now()
+    conn = get_conn()
+    with _lock:
+        conn.executemany(
+            "INSERT INTO campaign_contacts (campaign_id, contact_id, ticket_id, phone, name, call_status, "
+            "attempts, day_attempts, created_at, updated_at) VALUES (?,?,?,?,?,'pending',0,0,?,?)",
+            [(int(campaign_id), r.get("contact_id"), r.get("ticket_id"), r["phone"], r.get("name") or "",
+              now, now) for r in rows])
+        n = conn.execute("SELECT COUNT(*) FROM campaign_contacts WHERE campaign_id = ?",
+                         (int(campaign_id),)).fetchone()[0]
+        conn.execute("UPDATE campaigns SET contact_count = ?, updated_at = ? WHERE id = ?",
+                     (n, now, int(campaign_id)))
+        conn.commit()
+    return int(n)
+
+
+def get_campaign(campaign_id):
+    if campaign_id in (None, ""):
+        return None
+    return _one("SELECT * FROM campaigns WHERE id = ?", (int(campaign_id),))
+
+
+def campaign_progress(campaign_id) -> dict:
+    rows = _rows("SELECT call_status, COUNT(*) n FROM campaign_contacts WHERE campaign_id = ? "
+                 "GROUP BY call_status", (int(campaign_id),))
+    return {r["call_status"]: int(r["n"]) for r in rows}
+
+
+def campaign_outcomes(campaign_id) -> dict:
+    rows = _rows("SELECT outcome, COUNT(*) n FROM campaign_contacts WHERE campaign_id = ? "
+                 "AND outcome IS NOT NULL GROUP BY outcome", (int(campaign_id),))
+    return {r["outcome"]: int(r["n"]) for r in rows}
+
+
+def get_campaign_full(campaign_id):
+    c = get_campaign(campaign_id)
+    if not c:
+        return None
+    c["progress"] = campaign_progress(campaign_id)
+    c["outcomes"] = campaign_outcomes(campaign_id)
+    c["tickets_created"] = int(_one(
+        "SELECT COUNT(*) c FROM tickets WHERE source = 'campaign' AND call_id IN "
+        "(SELECT last_call_id FROM campaign_contacts WHERE campaign_id = ? AND last_call_id IS NOT NULL)",
+        (int(campaign_id),))["c"])
+    return c
+
+
+def list_campaigns(q=None, status=None, limit=50, offset=0):
+    where, params = [], []
+    if q:
+        where.append("name LIKE ?")
+        params.append(f"%{q}%")
+    if status:
+        where.append("status = ?")
+        params.append(status)
+    wsql = ("WHERE " + " AND ".join(where)) if where else ""
+    total = _one(f"SELECT COUNT(*) c FROM campaigns {wsql}", tuple(params))["c"]
+    rows = _rows(f"SELECT * FROM campaigns {wsql} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                 tuple(params) + (int(limit), int(offset)))
+    return {"items": rows, "total": int(total)}
+
+
+def active_campaigns():
+    return _rows("SELECT * FROM campaigns WHERE status IN ('scheduled','live') ORDER BY start_at, id")
+
+
+def live_campaigns():
+    return _rows("SELECT * FROM campaigns WHERE status = 'live' ORDER BY created_at ASC, id")
+
+
+def promote_due_campaigns(now_iso) -> int:
+    conn = get_conn()
+    with _lock:
+        cur = conn.execute("UPDATE campaigns SET status = 'live', updated_at = ? "
+                           "WHERE status = 'scheduled' AND start_at <= ?", (_now(), now_iso))
+        conn.commit()
+        return cur.rowcount
+
+
+def set_campaign_status(campaign_id, status):
+    _exec("UPDATE campaigns SET status = ?, updated_at = ? WHERE id = ?", (status, _now(), int(campaign_id)))
+
+
+def cancel_campaign(campaign_id) -> bool:
+    """Cancel a scheduled/live campaign and every contact still waiting to be dialled."""
+    conn = get_conn()
+    with _lock:
+        now = _now()
+        cur = conn.execute("UPDATE campaigns SET status = 'cancelled', updated_at = ? WHERE id = ? "
+                           "AND status IN ('scheduled','live')", (now, int(campaign_id)))
+        if cur.rowcount:
+            conn.execute("UPDATE campaign_contacts SET call_status = 'cancelled', next_attempt_at = NULL, "
+                         "updated_at = ? WHERE campaign_id = ? AND call_status = 'pending'",
+                         (now, int(campaign_id)))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+# Campaign contacts
+def cc_pending_due(campaign_id, now_iso, limit):
+    return _rows("SELECT * FROM campaign_contacts WHERE campaign_id = ? AND call_status = 'pending' "
+                 "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY id ASC LIMIT ?",
+                 (int(campaign_id), now_iso, int(limit)))
+
+
+def cc_by_status(campaign_id, status):
+    return _rows("SELECT * FROM campaign_contacts WHERE campaign_id = ? AND call_status = ? ORDER BY id ASC",
+                 (int(campaign_id), status))
+
+
+def list_campaign_contacts(campaign_id, status=None, q=None, limit=500, offset=0):
+    where, params = ["campaign_id = ?"], [int(campaign_id)]
+    if status:
+        where.append("call_status = ?")
+        params.append(status)
+    if q:
+        where.append("(name LIKE ? OR phone LIKE ? OR ticket_id LIKE ?)")
+        params += [f"%{q}%"] * 3
+    wsql = "WHERE " + " AND ".join(where)
+    total = _one(f"SELECT COUNT(*) c FROM campaign_contacts {wsql}", tuple(params))["c"]
+    rows = _rows(f"SELECT * FROM campaign_contacts {wsql} ORDER BY id ASC LIMIT ? OFFSET ?",
+                 tuple(params) + (int(limit), int(offset)))
+    return {"items": rows, "total": int(total)}
+
+
+def cc_open_count(campaign_id) -> int:
+    r = _one("SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id = ? "
+             "AND call_status IN ('pending','calling')", (int(campaign_id),))
+    return int(r["c"]) if r else 0
+
+
+def get_campaign_contact(cc_id):
+    if cc_id in (None, ""):
+        return None
+    return _one("SELECT * FROM campaign_contacts WHERE id = ?", (int(cc_id),))
+
+
+def cc_update(cc_id, **fields):
+    if not fields:
+        return
+    fields["updated_at"] = _now()
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    _exec(f"UPDATE campaign_contacts SET {cols} WHERE id = ?", tuple(fields.values()) + (int(cc_id),))
+
+
+def cc_upcoming(limit=200):
+    """Contacts dialled at least once: open retries first (soonest next attempt), then history."""
+    base = "FROM campaign_contacts cc JOIN campaigns c ON c.id = cc.campaign_id WHERE cc.attempts > 0"
+    total = _one(f"SELECT COUNT(*) n {base}")["n"]
+    rows = _rows(
+        "SELECT cc.*, c.name AS campaign_name, c.campaign_type, c.status AS campaign_status, "
+        "c.start_at AS campaign_start_at, c.callback_max_per_day AS campaign_max_per_day, "
+        "c.callback_days AS campaign_days, c.call_start_min AS campaign_call_start_min, "
+        f"c.call_end_min AS campaign_call_end_min {base} "
+        "ORDER BY (cc.call_status IN ('pending','calling')) DESC, (cc.next_attempt_at IS NULL) DESC, "
+        "cc.next_attempt_at ASC, cc.last_attempt_at DESC, cc.id ASC LIMIT ?", (int(limit),))
+    return {"items": rows, "total": int(total)}
 
 
 # ---------------------------------------------------------------------------------------
