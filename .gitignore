@@ -48,3 +48,20 @@ Thumbs.db
 *.mov
 *.wmv
 
+
+# EPP helpline
+.env
+.venv/
+venv/
+data/
+*.db
+*.db-wal
+*.db-shm
+*.wav
+*.eo-backup
+data-*/
+_serve_data/
+_smoke_data/
+_smoke_test.py
+.pytest_cache/
+__pycache__/

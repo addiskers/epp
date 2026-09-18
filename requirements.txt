@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+# >=2.10 exposes async function calling; the helpline's tools are all blocking, but the
+# same SDK line also carries the Live API features this build relies on.
+google-genai>=2.10,<3
+websockets
+python-dotenv
+python-multipart
+plivo
+tzdata
+# Vectorizes the real-time audio hot paths (mulaw<->PCM, VAD energy, recording mix)
+# ~50-100x, preventing event-loop stalls that break the 20ms playout pacing.
+# plivo_handler.py falls back to pure Python if numpy is missing.
+numpy

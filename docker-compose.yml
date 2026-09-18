@@ -1,0 +1,19 @@
+services:
+  epp-helpline:
+    build: .
+    container_name: epp-helpline
+    env_file:
+      - .env
+    environment:
+      # override whatever is in .env so the container is self-consistent
+      - PORT=8000
+      - DATA_DIR=/var/epp-data
+    ports:
+      # bound to localhost only — Caddy on the host terminates TLS and proxies in
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - epp-data:/var/epp-data
+    restart: unless-stopped
+
+volumes:
+  epp-data:
