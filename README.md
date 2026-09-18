@@ -55,6 +55,22 @@ number's Answer URL at `PUBLIC_URL/plivo/answer`.
 Status inquiries: "Do you have your reference number?" → `lookup_ticket` → the agent says
 only the status the database returns.
 
+## Outbound campaigns
+
+The helpline can also *place* calls. An admin builds a campaign on the Campaigns page:
+
+| Type | Who is called | What the agent does |
+|---|---|---|
+| **Intake round** | uploaded or typed contacts | Asks whether there is any concern to register; runs the normal intake if so. A concern becomes a ticket. |
+| **Ticket follow-up** | the contact number on selected tickets | Reads the reference number and current status, records anything they add onto the ticket timeline. |
+| **Announcement** | uploaded or typed contacts | Reads a message written on the campaign, in the person's language; can still register a concern. |
+
+Each campaign has a start time, calling hours, and a retry rule (attempts per day, for how
+many days, spaced by N hours). Unanswered dials, voicemails and "call me later" are retried;
+everything else closes the recipient out with its outcome. Dials are paced and share
+`MAX_LIVE_CALLS` with inbound calls. The **Scheduler** page has the kill switch that stops
+all outbound dialing at once.
+
 ## The admin dashboard (`/admin`)
 
 | Page | What it does |
@@ -62,6 +78,9 @@ only the status the database returns.
 | Dashboard | Open / high-priority / today tiles, breakdowns by status, department, caller type, priority, last 7 days, escalated list, live calls with a rolling transcript |
 | Tickets | Search and filter (status, priority, department, caller type, escalated, date), CSV export |
 | Ticket | Caller card, the concern, AI summary + sentiment + flags, transcript and recording, timeline, status / assignment / priority / notes / reclassify |
+| Campaigns | Create (type → recipients → message → schedule), list, detail with per-recipient status, outcome, Call now, cancel |
+| Contacts | The pool a campaign calls: xlsx/csv upload with a sample, add one, search, delete |
+| Scheduler | Kill switch for all outbound dialing, and the retry queue |
 | Routing | Departments, and the category → department mapping per caller type (with high-priority flag and keywords) |
 | Agent | The intake script (placeholders, voice), preview, browser-mic test, "Call me" test |
 | Call logs | Every call with transcript, recording, analysis and linked tickets |
@@ -75,6 +94,8 @@ Roles: **admin** sees everything; **dept_user** sees only tickets assigned to th
 | What | Where |
 |---|---|
 | The greeting and the whole script | Agent page (stored in the DB; `epp_seeds.py` is the shipped default) |
+| The follow-up and announcement scripts, and the outbound opening | Agent page — three agents; each has an inbound and an outbound opening |
+| Campaign pacing, calling hours, retries | `.env` (`EPP_CAMPAIGN_*`, `MAX_LIVE_CALLS`) and per campaign at creation |
 | Company / helpline name, ticket prefix, enabled languages | `.env` (`EPP_*`) |
 | Department mapping, high-priority categories, keywords | Routing page (`epp_seeds.py` seeds the first run) |
 | Priority keyword net | `routing.py` |
@@ -101,6 +122,10 @@ eo_api.py          /api/epp/* — tickets, routing config, agent, users, calls, 
 eo_auth.py         login, roles, throttle, signed tokens
 eo_db.py           SQLite schema v2 + queries (users, departments, categories, agents, tickets, events, audit)
 tickets.py         numbering, create_ticket / lookup_ticket handlers, status machine, post-call refinement
+campaigns.py       campaign service: validation, per-call context for a dial, record_outcome handler
+campaign_runner.py the paced dial loop: promote, reap, retry, calling hours, fair rotation, kill switch
+calling_window.py  calling-hours math
+contacts_import.py xlsx/csv contact import
 routing.py         category resolution, priority nets, keyword classifier
 analysis.py        post-call Gemini text pass (summary, intent, sentiment, classification)
 languages.py       the twelve languages

@@ -27,10 +27,12 @@ A healthy boot logs:
 
 ```
 INFO:main:EPP helpline ready: model=... languages=en,hi,... plivo=ready public_url=https://...
+INFO:campaign_runner:Campaign runner started (interval=30s, enabled=True, plivo_ready=True, ...)
 INFO:     Uvicorn running on http://0.0.0.0:8000
 ```
 
-**Check `plivo=ready`.** If it says `NOT configured`, inbound calls will not reach the agent.
+**Check `plivo=ready` / `plivo_ready=True`.** If either says otherwise, inbound calls will not
+reach the agent and campaigns will queue without dialing.
 
 The image is multi-stage: Node builds the SPA, then it is copied into the Python runtime, so
 the container always ships a UI that matches the API.
@@ -95,6 +97,8 @@ Re-run `npm run build` after any SPA change — FastAPI serves the built `admin/
 | `EPP_SESSION_SECRET` | Long random string; signs login tokens. |
 | `EPP_COMPANY_NAME` / `EPP_HELPLINE_NAME` / `EPP_TICKET_PREFIX` | Spoken in the greeting and the ticket number. |
 | `EPP_ENABLED_LANGUAGES` | Switch off any language that fails the live-call check below. |
+| `MAX_LIVE_CALLS` | Simultaneous live calls, inbound **and** campaign together (default 10). Each is a Gemini session plus telephony. |
+| `EPP_CAMPAIGN_*` | Campaign pacing and retries; see `.env.example`. The Scheduler page's ON/OFF switch is the fastest way to stop all outbound dialing. |
 | `DATA_DIR` | Leave blank under compose — it sets `/var/epp-data` (the persistent volume). |
 
 ---
@@ -156,6 +160,9 @@ docker compose exec epp-helpline tar czf - /var/epp-data > epp-backup-$(date +%F
    routing table filled in. Then **Talk to it** from the browser, and **Call me** on a phone.
 5. Run the language checklist above.
 6. Point the Plivo number at `PUBLIC_URL/plivo/answer`.
+7. **Campaigns** — add your own number on Contacts, then run one campaign of each type to it
+   (intake round, a follow-up on a test ticket, an announcement). Check the recipient's
+   status, the outcome, and — for the follow-up — the note on the ticket timeline.
 
 ---
 
@@ -178,5 +185,9 @@ which, in an amber banner.
 
 **The agent hung up while the caller was writing the number down** — raise
 `EO_POST_RSVP_IDLE_SECONDS` (default 20).
+
+**A campaign is live but nobody is being called** — in order: the Scheduler switch is OFF;
+it is outside the campaign's calling hours; `MAX_LIVE_CALLS` is used up by inbound calls;
+`plivo_ready=False` in the runner log. The recipient's status pill says which.
 
 **Tests** — `python -m pytest tests -q` from the app directory (the tests isolate `DATA_DIR`).
