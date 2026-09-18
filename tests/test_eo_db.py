@@ -47,11 +47,11 @@ def test_high_priority_categories_are_flagged(fresh_eo_db):
 def test_intake_agent_is_seeded_once_and_edits_survive(fresh_eo_db):
     eo_db = fresh_eo_db
     eo_db.init()
-    assert [a["slug"] for a in eo_db.list_agents()] == ["epp_intake"]
+    assert [a["slug"] for a in eo_db.list_agents()] == ["epp_intake", "epp_followup", "epp_announcement"]
     agent = eo_db.intake_agent()
     eo_db.update_agent(agent["id"], prompt_template="MY EDITED PROMPT")
     eo_db.init()
-    assert len(eo_db.list_agents()) == 1
+    assert len(eo_db.list_agents()) == 3
     assert eo_db.intake_agent()["prompt_template"] == "MY EDITED PROMPT"
     # an explicit reset restores the shipped text
     assert eo_db.refresh_seed_agent("epp_intake")

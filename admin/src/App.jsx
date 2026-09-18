@@ -12,6 +12,11 @@ import CallLogsPage from './pages/CallLogsPage.jsx'
 import Users from './pages/Users.jsx'
 import AuditLog from './pages/AuditLog.jsx'
 import Profile from './pages/Profile.jsx'
+import Contacts from './pages/Contacts.jsx'
+import Campaigns from './pages/Campaigns.jsx'
+import CampaignDetail from './pages/CampaignDetail.jsx'
+import CreateCampaign from './pages/CreateCampaign.jsx'
+import Scheduler from './pages/Scheduler.jsx'
 
 function Protected({ children, adminOnly }) {
   const { user, ready, isAdmin } = useAuth()
@@ -30,6 +35,11 @@ export default function App() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/tickets" element={<Tickets />} />
         <Route path="/tickets/:id" element={<TicketDetail />} />
+        <Route path="/contacts" element={<Protected adminOnly><Contacts /></Protected>} />
+        <Route path="/campaigns" element={<Protected adminOnly><Campaigns /></Protected>} />
+        <Route path="/campaigns/new" element={<Protected adminOnly><CreateCampaign /></Protected>} />
+        <Route path="/campaigns/:id" element={<Protected adminOnly><CampaignDetail /></Protected>} />
+        <Route path="/scheduler" element={<Protected adminOnly><Scheduler /></Protected>} />
         <Route path="/routing" element={<Protected adminOnly><Routing /></Protected>} />
         <Route path="/agents" element={<Protected adminOnly><Agents /></Protected>} />
         <Route path="/agents/:id" element={<Protected adminOnly><AgentEditor /></Protected>} />

@@ -133,6 +133,9 @@ def _matches(meta, filters):
     ids = filters.get("call_ids")
     if ids is not None and meta.get("id") not in ids:
         return False
+    cid = filters.get("campaign_id")
+    if cid not in (None, "") and str(meta.get("campaign_id") or "") != str(cid):
+        return False
     frm = filters.get("from")
     to = filters.get("to")
     d = _date_of(meta)
@@ -151,6 +154,23 @@ def _matches(meta, filters):
             if not digits_hit:
                 return False
     return True
+
+
+async def find_campaign_call(campaign_contact_id, since_iso=None):
+    """Latest call record for one campaign contact, started at/after since_iso. The campaign
+    runner uses it to tell an answered dial from a ring-out. Index-only (no disk)."""
+    with _LOCK:
+        metas = list(_INDEX.values())
+    best = None
+    for m in metas:
+        if str(m.get("campaign_contact_id") or "") != str(campaign_contact_id):
+            continue
+        st = m.get("started_at") or ""
+        if since_iso and st < since_iso:
+            continue
+        if best is None or st > (best.get("started_at") or ""):
+            best = m
+    return best
 
 
 async def list_calls(filters=None):

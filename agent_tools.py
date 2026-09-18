@@ -126,19 +126,53 @@ def create_ticket_declaration(categories=None, langs=None):
     }
 
 
-def build_tools(categories=None, langs=None):
-    """The function-declaration list for ``GeminiLive(tools=[{"function_declarations": ...}])``."""
+def record_outcome_declaration(campaign_type):
+    """How an OUTBOUND call ended, with the outcome vocabulary of its campaign type. Unknown
+    types get the intake vocabulary rather than an empty enum (which would reject the call)."""
+    import epp_seeds
+    outcomes = epp_seeds.OUTCOMES.get(campaign_type) or epp_seeds.OUTCOMES["intake"]
+    return {
+        "name": "record_outcome",
+        "description": (
+            "Record how this OUTBOUND call ended. Call it ONCE, silently, right before your goodbye, "
+            "when the call is finishing WITHOUT a ticket being created (on a follow-up call, always "
+            "call it). Outcomes: "
+            + "; ".join(f"{o['value']} = {o['description']}" for o in outcomes) + "."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "outcome_status": {"type": "string", "enum": [o["value"] for o in outcomes]},
+                "note": {"type": "string",
+                         "description": "What they said, in English, in one or two sentences. Empty if nothing."},
+                "callback_time_text": {"type": "string",
+                                       "description": "When they asked to be called back, in their words. Empty otherwise."},
+            },
+            "required": ["outcome_status"],
+        },
+    }
+
+
+def build_tools(categories=None, langs=None, campaign_type=None):
+    """The function-declaration list for ``GeminiLive(tools=[{"function_declarations": ...}])``.
+
+    campaign_type is set for an outbound (campaign) dial and adds record_outcome; an inbound
+    helpline call gets only the ticket tools."""
     try:
         create = create_ticket_declaration(categories, langs)
     except Exception:
         logger.exception("create_ticket declaration failed; using a category-free fallback")
         create = create_ticket_declaration([], None)
-    return [create, LOOKUP_TICKET_DECLARATION, END_CALL_DECLARATION]
+    tools = [create, LOOKUP_TICKET_DECLARATION]
+    if campaign_type:
+        tools.append(record_outcome_declaration(campaign_type))
+    tools.append(END_CALL_DECLARATION)
+    return tools
 
 
-def tool_names(categories=None):
-    return [t["name"] for t in build_tools(categories)]
+def tool_names(categories=None, campaign_type=None):
+    return [t["name"] for t in build_tools(categories, campaign_type=campaign_type)]
 
 
 # Tools whose completion means "the caller's task is done" for the bridge's hangup logic.
-COMPLETION_TOOLS = ("create_ticket", "lookup_ticket")
+COMPLETION_TOOLS = ("create_ticket", "lookup_ticket", "record_outcome")

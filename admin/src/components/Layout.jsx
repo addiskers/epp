@@ -2,11 +2,15 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth.jsx'
 import {
   IconDashboard, IconTicket, IconRouting, IconAgent, IconLogs, IconUsers, IconAudit, IconUser, IconLogout,
+  IconContacts, IconCampaigns, IconClock,
 } from './icons.jsx'
 
 const ADMIN_NAV = [
   { to: '/', label: 'Dashboard', icon: IconDashboard, end: true },
   { to: '/tickets', label: 'Tickets', icon: IconTicket },
+  { to: '/campaigns', label: 'Campaigns', icon: IconCampaigns },
+  { to: '/contacts', label: 'Contacts', icon: IconContacts },
+  { to: '/scheduler', label: 'Scheduler', icon: IconClock },
   { to: '/routing', label: 'Routing', icon: IconRouting },
   { to: '/agents', label: 'Agent', icon: IconAgent },
   { to: '/call-logs', label: 'Call Logs', icon: IconLogs },

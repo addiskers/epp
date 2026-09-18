@@ -45,6 +45,8 @@ from gemini_live import GeminiLive
 from plivo_handler import PlivoMediaBridge
 
 import agent_tools
+import campaign_runner
+import campaigns
 import eo_api
 import eo_auth
 import eo_db
@@ -71,14 +73,18 @@ def handle_end_call(**kwargs):
     return {"success": True, "instruction": "Call ending; do not speak further."}
 
 
-def tool_mapping(recorder: CallRecorder):
-    """The three helpline tools, closed over THIS call's recorder so a ticket links to its
-    call record. recorder.call_meta is read at call time, after recorder.open() ran."""
-    return {
+def tool_mapping(recorder: CallRecorder, outbound=False):
+    """The helpline tools, closed over THIS call's recorder so a ticket links to its call
+    record. recorder.call_meta is read at call time, after recorder.open() ran. Outbound
+    (campaign) calls also get record_outcome."""
+    mapping = {
         "create_ticket": lambda **kw: tickets.create_from_tool(kw, recorder.call_meta),
         "lookup_ticket": lambda **kw: tickets.lookup(kw.get("ticket_number")),
         "end_call": handle_end_call,
     }
+    if outbound:
+        mapping["record_outcome"] = lambda **kw: campaigns.handle_record_outcome(kw, recorder.call_meta)
+    return mapping
 
 
 # ---------------------------------------------------------------------------------------
@@ -171,6 +177,23 @@ def active_calls():
     return [dict(v, call_sid=k) for k, v in _active_calls.items()]
 
 
+# Global cap on simultaneous live calls — inbound helpline calls AND campaign dials share it,
+# so a campaign can never starve the helpline. Read once; the runner reads live_room().
+def _max_live_calls():
+    try:
+        return max(1, int(os.getenv("MAX_LIVE_CALLS", "10")))
+    except (TypeError, ValueError):
+        return 10
+
+
+MAX_LIVE_CALLS = _max_live_calls()
+
+
+def live_room() -> int:
+    """How many more calls may start right now (>= 0)."""
+    return max(0, MAX_LIVE_CALLS - len(_active_calls))
+
+
 # Metadata stashed at /plivo/answer keyed by CallUUID; Plivo drops <Stream extraHeaders> on
 # bidirectional streams.
 _pending_call_meta: dict = {}
@@ -222,12 +245,14 @@ async def _prewarm_gemini(call_uuid: str, ctx=None):
             pass
 
 
-def _remember_call_meta(call_uuid, caller, direction="", trigger="", context=None):
+def _remember_call_meta(call_uuid, caller, direction="", trigger="", context=None,
+                        campaign_id=None, campaign_contact_id=None):
     if not call_uuid:
         return
     _pending_call_meta[call_uuid] = {
         "caller": caller or "", "direction": direction or "", "trigger": trigger or "",
         "ctx": context or {}, "answered_at": time.monotonic(),
+        "campaign_id": campaign_id, "campaign_contact_id": campaign_contact_id,
     }
     if len(_pending_call_meta) > 200:
         for k in list(_pending_call_meta)[:50]:
@@ -268,7 +293,20 @@ async def _lifespan(app: FastAPI):
                 MODEL, ",".join(languages.enabled_codes()),
                 "ready" if os.getenv("PLIVO_AUTH_ID") and os.getenv("PLIVO_FROM_NUMBER") else "NOT configured",
                 os.getenv("PUBLIC_URL") or "(unset)")
-    yield
+    runner = None
+    try:
+        runner = asyncio.create_task(campaign_runner.run_loop())
+    except Exception as e:
+        logger.error(f"Failed to start the campaign runner: {e}")
+    try:
+        yield
+    finally:
+        if runner:
+            runner.cancel()
+            try:
+                await runner
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 app = FastAPI(lifespan=_lifespan)
@@ -487,20 +525,29 @@ async def plivo_answer(request: Request):
     ws_url = f"{'wss' if secure else 'ws'}://{host}/plivo/media-stream"
 
     qp = request.query_params
-    # ?caller= exists only on answer URLs WE built for test dials; a genuine inbound call
-    # carries the number in `From`.
-    is_test = bool(qp.get("caller"))
+    # ?caller= exists only on answer URLs WE built for outbound dials (a test call, or a
+    # campaign dial carrying ?campaign=&cc=); a genuine inbound call carries the number in `From`.
     caller = qp.get("caller") or qp.get("From") or qp.get("from") or ""
     call_uuid = qp.get("CallUUID") or qp.get("callUUID") or qp.get("RequestUUID") or ""
-    direction = "test" if is_test else "inbound"
-    logger.info(f"{direction.upper()} call {call_uuid or '-'} from {caller or 'unknown'}")
+    campaign_id = cc_id = None
+    try:
+        if qp.get("campaign") and qp.get("cc"):
+            campaign_id, cc_id = int(qp["campaign"]), int(qp["cc"])
+    except (TypeError, ValueError):
+        campaign_id = cc_id = None
+    direction = "campaign" if campaign_id else ("test" if qp.get("caller") else "inbound")
+    logger.info(f"{direction.upper()} call {call_uuid or '-'} to/from {caller or 'unknown'}"
+                + (f" (campaign {campaign_id}, contact {cc_id})" if campaign_id else ""))
 
-    call_ctx = _resolve_call_context(caller=caller, agent_id=qp.get("agent") or None)
+    if campaign_id:
+        call_ctx = campaigns.call_context(campaign_id, cc_id, caller=caller)
+    else:
+        call_ctx = _resolve_call_context(caller=caller, agent_id=qp.get("agent") or None)
     if call_ctx.get("missing"):
         logger.warning("Call %s: prompt has unresolved placeholders %s", call_uuid or "-", call_ctx["missing"])
 
     _remember_call_meta(call_uuid, caller, direction=direction, trigger=call_ctx.get("trigger") or "",
-                        context=call_ctx)
+                        context=call_ctx, campaign_id=campaign_id, campaign_contact_id=cc_id)
     if call_uuid and GEMINI_API_KEY:
         ws_url += f"?call={quote(call_uuid)}"
         asyncio.create_task(_prewarm_gemini(call_uuid, call_ctx))
@@ -527,7 +574,9 @@ async def plivo_media_stream(websocket: WebSocket):
     meta = _pending_call_meta.get(call_uuid) or {}
     ctx = meta.get("ctx") or {}
     call_agent = ctx.get("agent") or {}
-    source = "plivo" if meta.get("direction") == "test" else "plivo_inbound"
+    direction = meta.get("direction")
+    source = {"test": "plivo", "campaign": "plivo_campaign"}.get(direction, "plivo_inbound")
+    is_campaign = bool(meta.get("campaign_id"))
 
     recorder = CallRecorder(model=MODEL)
     gemini_client = GeminiLive(
@@ -536,7 +585,7 @@ async def plivo_media_stream(websocket: WebSocket):
         system_instruction=ctx.get("system_instruction"),
         voice_name=call_agent.get("voice_name"),
         speech_language_code=call_agent.get("speech_language_code"),
-        tool_mapping=tool_mapping(recorder),
+        tool_mapping=tool_mapping(recorder, outbound=is_campaign),
     )
 
     async def broadcast_event(event):
@@ -545,7 +594,9 @@ async def plivo_media_stream(websocket: WebSocket):
         if etype == "call_start":
             m = _pending_call_meta.pop(event.get("call_sid") or "", {})
             caller = m.get("caller") or event.get("caller") or ""
-            await recorder.open(source=source, call_sid=event.get("call_sid") or None, caller=caller)
+            await recorder.open(source=source, call_sid=event.get("call_sid") or None, caller=caller,
+                                campaign_id=m.get("campaign_id") or meta.get("campaign_id"),
+                                campaign_contact_id=m.get("campaign_contact_id") or meta.get("campaign_contact_id"))
             sid = event.get("call_sid") or ""
             if sid:
                 _active_calls[sid] = {"caller": caller, "started_at": time.time(),

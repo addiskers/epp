@@ -49,6 +49,23 @@ export const api = {
   raw: (p) => request('GET', p, null, { raw: true }),
 }
 
+// Multipart upload (bearer auth, no JSON content-type).
+export async function uploadFile(path, file, fields = {}) {
+  const fd = new FormData()
+  fd.append('file', file)
+  for (const [k, v] of Object.entries(fields)) {
+    if (v !== undefined && v !== null && v !== '') fd.append(k, String(v))
+  }
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${getToken()}` },
+    body: fd,
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.detail || 'Upload failed')
+  return data
+}
+
 // Authenticated file download → browser save dialog.
 export async function downloadFile(path, filename) {
   const res = await fetch(`${BASE}${path}`, { headers: { Authorization: `Bearer ${getToken()}` } })
@@ -101,3 +118,16 @@ export const LANG_NAME = {
   kn: 'Kannada', ml: 'Malayalam', pa: 'Punjabi', or: 'Odia', as: 'Assamese',
 }
 export function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : '' }
+
+// Outbound campaigns
+export const CAMPAIGN_TYPE_LABEL = { intake: 'Intake round', followup: 'Ticket follow-up', announcement: 'Announcement' }
+export const CAMPAIGN_TYPE_DESC = {
+  intake: 'The agent calls each number, asks whether there is any concern to register, and runs the normal intake if there is. A concern becomes a ticket.',
+  followup: 'The agent calls the person behind each selected ticket, reads them the reference number and current status, and records anything they add to the ticket timeline.',
+  announcement: 'The agent reads a message you write here, in the caller\'s language, answers questions from it, and can still register a concern if one comes up.',
+}
+// minutes-since-midnight (IST) -> "09:00"
+export const minToHHMM = (m) => {
+  const v = Number.isFinite(Number(m)) ? Number(m) : 0
+  return `${String(Math.floor(v / 60)).padStart(2, '0')}:${String(v % 60).padStart(2, '0')}`
+}

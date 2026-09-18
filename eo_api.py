@@ -15,11 +15,15 @@ import logging
 import os
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
 import agent_tools
 import audit
+import calling_window
+import campaign_runner
+import campaigns
+import contacts_import
 import eo_auth
 import eo_db
 import languages
@@ -572,6 +576,7 @@ def _call_filters(request: Request) -> dict:
     return {"source": qp.get("source") or None, "from": qp.get("from") or None,
             "to": qp.get("to") or None, "q": qp.get("q") or None,
             "with_ticket": (wt in ("1", "true")) if wt not in (None, "") else None,
+            "campaign_id": qp.get("campaign_id") or None,
             "limit": qp.get("limit"), "offset": qp.get("offset")}
 
 
@@ -719,6 +724,276 @@ async def agents_test_call(agent_id: int, request: Request):
         raise HTTPException(status_code=502, detail=res["error"])
     audit.log("agent_test_call", user=user, target=f"agent:{agent_id}", detail={"phone": phone}, request=request)
     return JSONResponse(res)
+
+
+# ---------------------------------------------------------------------------------------
+# Outbound campaigns (admin)
+# ---------------------------------------------------------------------------------------
+_OUTCOME_LABELS = {
+    "no_concern": ("No concern", "green"), "confirmed": ("Confirmed", "green"),
+    "has_update": ("Gave an update", "green"), "acknowledged": ("Acknowledged", "green"),
+    "ticket_created": ("Ticket created", "green"), "answered": ("Answered", "green"),
+    "declined": ("Declined", "red"), "wrong_number": ("Wrong number", "red"),
+    "callback": ("Callback requested", "amber"), "not_reachable": ("Not reachable", "amber"),
+}
+
+
+def _outcome_label(value):
+    return _OUTCOME_LABELS.get(value, (value, "amber"))[0] if value else None
+
+
+def _contact_display(cc, campaign=None, runner_on=True, now=None, now_min=None):
+    """Human status for a campaign_contacts row: (display_status, display_variant).
+    Explains WHY a past-due retry isn't dialing instead of showing a stale 'Pending'."""
+    st = cc.get("call_status")
+    outcome = cc.get("outcome")
+    if st == "calling":
+        return ("In progress", "blue")
+    if st == "cancelled":
+        return ("Cancelled", "red")
+    if st == "failed":
+        return ("Unreachable — max attempts", "red")
+    if st == "done":
+        if outcome in _OUTCOME_LABELS:
+            return _OUTCOME_LABELS[outcome]
+        return ((str(outcome), "green") if outcome else ("Answered — nothing recorded", "amber"))
+    if int(cc.get("attempts") or 0) == 0:
+        return ("Queued", "amber")
+    reason = _outcome_label(outcome) or (cc.get("last_error") or "no answer")
+    nxt = _parse_iso(cc.get("next_attempt_at"))
+    if nxt and nxt > (now or datetime.now(timezone.utc)):
+        return (f"Retry scheduled — {reason}", "amber")
+    if campaign and campaign.get("status") != "live":
+        return ("Waiting — campaign not active", "amber")
+    if not runner_on:
+        return ("Waiting — scheduler off", "amber")
+    if campaign is not None:
+        start_min, end_min = calling_window.campaign_window(campaign)
+        if not calling_window.in_call_window(start_min, end_min, now_min=now_min):
+            return ("Waiting for calling hours", "amber")
+    return (f"Due now — {reason}", "amber")
+
+
+def _attach_contact_display(items, campaign=None, runner_on=True):
+    now = datetime.now(timezone.utc)
+    now_min = calling_window.now_ist_min()
+    for cc in items:
+        camp = campaign
+        if camp is None and cc.get("campaign_status") is not None:
+            camp = {"status": cc.get("campaign_status"), "call_start_min": cc.get("campaign_call_start_min"),
+                    "call_end_min": cc.get("campaign_call_end_min")}
+        label, variant = _contact_display(cc, camp, runner_on, now=now, now_min=now_min)
+        cc["display_status"] = label
+        cc["display_variant"] = variant
+        cc["outcome_label"] = _outcome_label(cc.get("outcome"))
+    return items
+
+
+def _campaign_or_404(campaign_id):
+    c = eo_db.get_campaign(campaign_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return c
+
+
+def _cc_or_404(campaign_id, cc_id):
+    cc = eo_db.get_campaign_contact(cc_id)
+    if not cc or int(cc.get("campaign_id") or 0) != int(campaign_id):
+        raise HTTPException(status_code=404, detail="Recipient not found")
+    return cc
+
+
+@router.get("/campaign-types")
+async def campaign_types(request: Request):
+    eo_auth.require_admin(request)
+    import epp_seeds
+    return JSONResponse({"items": [
+        {"type": t, "label": campaigns.TYPE_LABEL[t], "outcomes": epp_seeds.OUTCOMES[t],
+         "agent_slug": epp_seeds.AGENT_FOR_TYPE[t]} for t in eo_db.CAMPAIGN_TYPES]})
+
+
+# Contacts
+@router.get("/contacts")
+async def contacts_list(request: Request):
+    eo_auth.require_admin(request)
+    qp = request.query_params
+    return JSONResponse(eo_db.list_contacts(
+        q=qp.get("q") or None, caller_type=qp.get("caller_type") or None, status=qp.get("status") or None,
+        limit=int(qp.get("limit") or 25), offset=int(qp.get("offset") or 0)))
+
+
+@router.post("/contacts")
+async def contacts_add(request: Request):
+    admin = eo_auth.require_admin(request)
+    body = await _body(request)
+    e164, valid = contacts_import.normalize_phone(body.get("phone"))
+    if not e164 or not valid:
+        raise HTTPException(status_code=400, detail="A valid phone number is required")
+    caller_type = routing.normalize_caller_type(body.get("caller_type")) if body.get("caller_type") else ""
+    cid, created = eo_db.add_contact(_clean_str(body, "name", max_len=120), e164, caller_type=caller_type,
+                                     notes=_clean_str(body, "notes", max_len=500), source="manual",
+                                     created_by=admin["id"])
+    audit.log("contact_added", user=admin, target=f"contact:{cid}", detail={"phone": e164, "created": created},
+              request=request)
+    return {"ok": True, "id": cid, "created": created, "phone": e164}
+
+
+@router.post("/contacts/import")
+async def contacts_upload(request: Request, file: UploadFile = File(...)):
+    admin = eo_auth.require_admin(request)
+    data = await file.read()
+    try:
+        rows, rejected, total, unknown = contacts_import.parse_upload(file.filename, data)
+    except Exception as e:
+        logger.warning("Contact import parse failed: %s", e)
+        raise HTTPException(status_code=400, detail="Could not read that file. Use the sample .xlsx / .csv format.")
+    added, updated = eo_db.bulk_upsert_contacts(rows, source="upload", created_by=admin["id"])
+    invalid = sum(1 for r in rows if r[2] == "invalid")
+    audit.log("contacts_imported", user=admin, detail={"file": file.filename, "rows": total, "added": added,
+                                                       "updated": updated, "rejected": rejected}, request=request)
+    return {"ok": True, "rows_read": total, "added": added, "updated": updated, "invalid": invalid,
+            "rejected": rejected, "unknown_headers": unknown[:12]}
+
+
+@router.get("/contacts/template")
+async def contacts_template(request: Request):
+    eo_auth.require_admin(request)
+    return Response(content=contacts_import.build_template(),
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": "attachment; filename=contacts_template.xlsx"})
+
+
+@router.post("/contacts/delete")
+async def contacts_delete(request: Request):
+    admin = eo_auth.require_admin(request)
+    body = await _body(request)
+    ids = body.get("ids") or []
+    n = eo_db.delete_contacts(ids)
+    audit.log("contacts_deleted", user=admin, detail={"ids": ids[:50], "deleted": n}, request=request)
+    return {"ok": True, "deleted": n}
+
+
+# Campaigns
+@router.get("/campaigns")
+async def campaigns_list(request: Request):
+    eo_auth.require_admin(request)
+    qp = request.query_params
+    data = eo_db.list_campaigns(q=qp.get("q") or None, status=qp.get("status") or None,
+                                limit=int(qp.get("limit") or 50), offset=int(qp.get("offset") or 0))
+    for c in data["items"]:
+        c["progress"] = eo_db.campaign_progress(c["id"])
+        c["type_label"] = campaigns.TYPE_LABEL.get(c["campaign_type"], c["campaign_type"])
+    return JSONResponse(data)
+
+
+@router.post("/campaigns")
+async def campaigns_create(request: Request):
+    admin = eo_auth.require_admin(request)
+    body = await _body(request)
+    try:
+        c = campaigns.create(admin, body)
+    except campaigns.CampaignError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    audit.log("campaign_created", user=admin, target=f"campaign:{c['id']}",
+              detail={"name": c["name"], "type": c["campaign_type"], "recipients": c["contact_count"],
+                      "start_at": c["start_at"]}, request=request)
+    return JSONResponse(c, status_code=201)
+
+
+@router.get("/campaigns/{campaign_id}")
+async def campaign_detail(campaign_id: int, request: Request):
+    eo_auth.require_admin(request)
+    _campaign_or_404(campaign_id)
+    c = eo_db.get_campaign_full(campaign_id)
+    c["type_label"] = campaigns.TYPE_LABEL.get(c["campaign_type"], c["campaign_type"])
+    c["outcome_labels"] = {k: _outcome_label(k) for k in c.get("outcomes", {})}
+    return JSONResponse(c)
+
+
+@router.post("/campaigns/{campaign_id}/cancel")
+async def campaign_cancel(campaign_id: int, request: Request):
+    admin = eo_auth.require_admin(request)
+    _campaign_or_404(campaign_id)
+    if not eo_db.cancel_campaign(campaign_id):
+        raise HTTPException(status_code=400, detail="Campaign is not cancellable (already completed or cancelled)")
+    audit.log("campaign_cancelled", user=admin, target=f"campaign:{campaign_id}", request=request)
+    return {"ok": True}
+
+
+@router.get("/campaigns/{campaign_id}/contacts")
+async def campaign_contacts(campaign_id: int, request: Request):
+    eo_auth.require_admin(request)
+    campaign = _campaign_or_404(campaign_id)
+    qp = request.query_params
+    data = eo_db.list_campaign_contacts(campaign_id, status=qp.get("status") or None, q=qp.get("q") or None,
+                                        limit=int(qp.get("limit") or 500), offset=int(qp.get("offset") or 0))
+    _attach_contact_display(data["items"], campaign, campaign_runner.is_enabled())
+    return JSONResponse(data)
+
+
+@router.post("/campaigns/{campaign_id}/contacts/{cc_id}/retry")
+async def campaign_contact_retry(campaign_id: int, cc_id: int, request: Request):
+    """'Call now' — dial this recipient immediately (promotes a scheduled campaign to live)."""
+    admin = eo_auth.require_admin(request)
+    _campaign_or_404(campaign_id)
+    cc = _cc_or_404(campaign_id, cc_id)
+    res = await campaign_runner.dial_contact_now(campaign_id, cc_id)
+    if res.get("error"):
+        raise HTTPException(status_code=400, detail=res["error"])
+    audit.log("campaign_call_now", user=admin, target=f"campaign:{campaign_id}",
+              detail={"cc_id": cc_id, "phone": cc.get("phone")}, request=request)
+    return {"ok": True}
+
+
+@router.post("/campaigns/{campaign_id}/contacts/{cc_id}/cancel")
+async def campaign_contact_cancel(campaign_id: int, cc_id: int, request: Request):
+    """Cancel a PENDING retry for this recipient — no more automatic dials."""
+    admin = eo_auth.require_admin(request)
+    _campaign_or_404(campaign_id)
+    cc = _cc_or_404(campaign_id, cc_id)
+    st = cc.get("call_status")
+    if st == "calling":
+        raise HTTPException(status_code=409, detail="A call to this recipient is in progress")
+    if st != "pending":
+        raise HTTPException(status_code=400, detail="Nothing to cancel — this recipient has no pending call")
+    eo_db.cc_update(cc_id, call_status="cancelled", next_attempt_at=None)
+    audit.log("campaign_contact_cancelled", user=admin, target=f"campaign:{campaign_id}",
+              detail={"cc_id": cc_id}, request=request)
+    return {"ok": True}
+
+
+@router.patch("/campaigns/{campaign_id}/contacts/{cc_id}/remark")
+async def campaign_contact_remark(campaign_id: int, cc_id: int, request: Request):
+    eo_auth.require_admin(request)
+    _campaign_or_404(campaign_id)
+    _cc_or_404(campaign_id, cc_id)
+    body = await _body(request)
+    remark = _clean_str(body, "remark", max_len=500)
+    eo_db.cc_update(cc_id, remark=remark)
+    return {"ok": True, "remark": remark}
+
+
+# Scheduler (the dial loop's kill switch + retry queue)
+@router.get("/scheduler/queue")
+async def scheduler_queue(request: Request):
+    eo_auth.require_admin(request)
+    data = eo_db.cc_upcoming(limit=int(request.query_params.get("limit") or 200))
+    on = campaign_runner.is_enabled()
+    _attach_contact_display(data["items"], None, on)
+    data["scheduler_enabled"] = on
+    data["active_campaigns"] = len(eo_db.active_campaigns())
+    data["max_active_campaigns"] = campaigns.max_active()
+    return JSONResponse(data)
+
+
+@router.post("/scheduler/toggle")
+async def scheduler_toggle(request: Request):
+    admin = eo_auth.require_admin(request)
+    body = await _body(request)
+    enabled = bool(body.get("enabled", not campaign_runner.is_enabled()))
+    campaign_runner.set_override(enabled)
+    audit.log("scheduler_toggled", user=admin, detail={"enabled": enabled}, request=request)
+    return {"ok": True, "enabled": enabled}
 
 
 # ---------------------------------------------------------------------------------------

@@ -43,11 +43,14 @@ def _place_call_sync(to_number, answer_url, from_number):
         resp.get("request_uuid") if isinstance(resp, dict) else None)
 
 
-async def place_call(to_number, *, base_url=None, request=None, agent_id=None):
-    """Place one outbound test call that bridges to the intake agent.
+async def place_call(to_number, *, base_url=None, request=None, agent_id=None,
+                     campaign_id=None, campaign_contact_id=None):
+    """Place one outbound call that bridges to an agent.
 
     Returns {"success": True, "call_uuid": ..., "to": ..., "from": ...} or {"error": "..."}.
-    `agent_id` (an int) picks which agent row speaks; the default is the intake agent."""
+    `agent_id` (an int) picks which agent row speaks on a TEST call; `campaign_id` +
+    `campaign_contact_id` mark a campaign dial — /plivo/answer then renders that campaign's
+    script and tools for this one recipient."""
     if not to_number:
         return {"error": "Missing 'to' number"}
     base = _base_url(base_url=base_url, request=request)
@@ -58,7 +61,15 @@ async def place_call(to_number, *, base_url=None, request=None, agent_id=None):
     numbers = from_numbers()
     if not numbers:
         return {"error": "PLIVO_FROM_NUMBER not configured"}
-    answer_url = f"{base}/plivo/answer?caller={quote(to_number)}&test=1"
+    answer_url = f"{base}/plivo/answer?caller={quote(to_number)}"
+    if campaign_id not in (None, "") and campaign_contact_id not in (None, ""):
+        try:
+            answer_url += f"&campaign={int(campaign_id)}&cc={int(campaign_contact_id)}"
+        except (TypeError, ValueError):
+            logger.warning("place_call: ignoring non-numeric campaign ids %r/%r", campaign_id, campaign_contact_id)
+            answer_url += "&test=1"
+    else:
+        answer_url += "&test=1"
     if agent_id not in (None, ""):
         try:
             answer_url += f"&agent={int(agent_id)}"
