@@ -97,7 +97,8 @@ CREATE TABLE IF NOT EXISTS agents (
     slug                 TEXT NOT NULL UNIQUE,
     description          TEXT NOT NULL DEFAULT '',
     prompt_template      TEXT NOT NULL,
-    trigger_template     TEXT NOT NULL DEFAULT '',
+    trigger_template     TEXT NOT NULL DEFAULT '',      -- first-turn trigger on an INBOUND call
+    outbound_trigger_template TEXT NOT NULL DEFAULT '', -- first-turn trigger on a campaign dial
     voice_name           TEXT NOT NULL DEFAULT '',
     speech_language_code TEXT NOT NULL DEFAULT '',
     active               INTEGER NOT NULL DEFAULT 1,
@@ -242,6 +243,11 @@ def init() -> None:
     """Create tables (idempotent) and seed departments, categories and the intake agent."""
     conn = get_conn()
     with _lock:
+        # v2 -> v3: the agents table gained the outbound trigger. ALTER before executescript,
+        # which would otherwise leave an older table without the column the seeder writes.
+        have = {r["name"] for r in conn.execute("PRAGMA table_info(agents)").fetchall()}
+        if have and "outbound_trigger_template" not in have:
+            conn.execute("ALTER TABLE agents ADD COLUMN outbound_trigger_template TEXT NOT NULL DEFAULT ''")
         conn.executescript(SCHEMA)
         conn.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
         conn.commit()
@@ -319,10 +325,11 @@ def _seed_agents() -> None:
                 continue
             conn.execute(
                 "INSERT INTO agents (name, slug, description, prompt_template, trigger_template, "
-                "voice_name, speech_language_code, active, created_at, updated_at) "
-                "VALUES (?,?,?,?,?,'','',1,?,?)",
+                "outbound_trigger_template, voice_name, speech_language_code, active, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,'','',1,?,?)",
                 (seed["name"], seed["slug"], seed.get("description", ""),
-                 seed["prompt_template"], seed.get("trigger_template", ""), now, now))
+                 seed["prompt_template"], seed.get("trigger_template", ""),
+                 seed.get("outbound_trigger_template", ""), now, now))
         conn.commit()
 
 
@@ -331,9 +338,10 @@ def refresh_seed_agent(slug: str) -> bool:
     import epp_seeds
     for seed in epp_seeds.SEEDS:
         if seed["slug"] == slug:
-            n = _exec("UPDATE agents SET prompt_template = ?, trigger_template = ?, updated_at = ? "
-                      "WHERE slug = ?",
-                      (seed["prompt_template"], seed.get("trigger_template", ""), _now(), slug))
+            n = _exec("UPDATE agents SET prompt_template = ?, trigger_template = ?, "
+                      "outbound_trigger_template = ?, updated_at = ? WHERE slug = ?",
+                      (seed["prompt_template"], seed.get("trigger_template", ""),
+                       seed.get("outbound_trigger_template", ""), _now(), slug))
             return bool(n is not None)
     return False
 
@@ -495,7 +503,7 @@ def delete_category(category_id: int) -> int:
 # Agents
 # ---------------------------------------------------------------------------------------
 AGENT_FIELDS = ("name", "slug", "description", "prompt_template", "trigger_template",
-                "voice_name", "speech_language_code", "active")
+                "outbound_trigger_template", "voice_name", "speech_language_code", "active")
 
 
 def get_agent(agent_id) -> dict | None:

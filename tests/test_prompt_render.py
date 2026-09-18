@@ -162,8 +162,11 @@ def test_intake_prompt_never_promises_outcomes_or_invents_status():
     assert "Never invent a ticket status" in t
     assert "NONE of these is a reason to end the call" in t
     assert "SPEAK TO A PERSON" in t
-    for bad in ("record_outcome", "record_rsvp", "wedding", "guest", "RSVP"):
+    for bad in ("record_rsvp", "wedding", "guest", "RSVP"):
         assert bad not in t, bad
+    # record_outcome is only for OUTBOUND (campaign) calls; the inbound flow never mentions it
+    inbound_part = t.split("## OUTBOUND CALLS")[0]
+    assert "record_outcome" not in inbound_part
 
 
 def test_intake_prompt_asks_every_required_detail_per_caller_type():

@@ -62,6 +62,11 @@ KNOWN_PLACEHOLDERS = frozenset({
     "caller_phone", "caller_phone_spoken",
     # the helpline
     "company_name", "helpline_name", "language_list", "category_list", "department_list",
+    # outbound campaign calls
+    "campaign_name", "campaign_message", "caller_name",
+    # follow-up calls: the ticket being followed up
+    "ticket_id", "ticket_id_spoken", "ticket_status", "ticket_category", "ticket_department",
+    "ticket_created_spoken",
 })
 
 
@@ -290,13 +295,19 @@ DEFAULT_TRIGGER = (
 
 
 def render_prompt(agent, *, caller_phone=None, categories=None, departments=None, langs=None,
-                  now=None, extra=None):
-    """The one function the call path uses. Never raises."""
+                  now=None, extra=None, outbound=False):
+    """The one function the call path uses. Never raises.
+
+    outbound=True (a campaign dial) uses the agent's outbound trigger when it has one — the
+    person did not ring us, so the opening must say who is calling and why."""
     agent = agent or {}
     ctx = build_context(caller_phone=caller_phone, categories=categories,
                         departments=departments, langs=langs, now=now, extra=extra)
     system_instruction, missing_prompt = render(agent.get("prompt_template") or "", ctx)
-    trigger, missing_trigger = render(agent.get("trigger_template") or "", ctx)
+    trigger_template = agent.get("trigger_template") or ""
+    if outbound and (agent.get("outbound_trigger_template") or "").strip():
+        trigger_template = agent["outbound_trigger_template"]
+    trigger, missing_trigger = render(trigger_template, ctx)
     if not trigger:
         trigger = DEFAULT_TRIGGER
     missing = sorted(set(missing_prompt) | set(missing_trigger))
