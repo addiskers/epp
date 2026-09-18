@@ -54,8 +54,10 @@ def test_lookup_ids_are_kept_only_when_found():
 
 def test_call_meta_links_a_ticket_to_its_call():
     r = _rec_with_call()
-    assert r.call_meta == {"call_id": "c1", "call_sid": "sid1", "caller": "+919000000001"}
-    assert CallRecorder().call_meta == {"call_id": None, "call_sid": None, "caller": None}
+    assert r.call_meta == {"call_id": "c1", "call_sid": "sid1", "caller": "+919000000001",
+                           "campaign_id": None, "campaign_contact_id": None}
+    assert CallRecorder().call_meta == {"call_id": None, "call_sid": None, "caller": None,
+                                        "campaign_id": None, "campaign_contact_id": None}
 
 
 def test_language_inference_covers_every_script_and_romanised_hindi():

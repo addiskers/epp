@@ -171,6 +171,23 @@ def active_calls():
     return [dict(v, call_sid=k) for k, v in _active_calls.items()]
 
 
+# Global cap on simultaneous live calls — inbound helpline calls AND campaign dials share it,
+# so a campaign can never starve the helpline. Read once; the runner reads live_room().
+def _max_live_calls():
+    try:
+        return max(1, int(os.getenv("MAX_LIVE_CALLS", "10")))
+    except (TypeError, ValueError):
+        return 10
+
+
+MAX_LIVE_CALLS = _max_live_calls()
+
+
+def live_room() -> int:
+    """How many more calls may start right now (>= 0)."""
+    return max(0, MAX_LIVE_CALLS - len(_active_calls))
+
+
 # Metadata stashed at /plivo/answer keyed by CallUUID; Plivo drops <Stream extraHeaders> on
 # bidirectional streams.
 _pending_call_meta: dict = {}

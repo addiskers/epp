@@ -174,6 +174,7 @@ def create_from_tool(args: dict, call_meta: dict | None = None) -> dict:
 
         lang = languages.normalize(args.get("language")) or ""
         now = datetime.now(_IST)
+        campaign_id = call_meta.get("campaign_id")
         ticket_id = eo_db.next_ticket_id(prefix(), now.year)
         eo_db.create_ticket(
             ticket_id,
@@ -196,13 +197,15 @@ def create_from_tool(args: dict, call_meta: dict | None = None) -> dict:
             description=description,
             assigned_department_id=dept_id,
             status="open",
-            source="voice",
+            source="campaign" if campaign_id else "voice",
         )
         dept_name = (eo_db.get_department(dept_id) or {}).get("name") if dept_id else ""
         eo_db.add_ticket_event(ticket_id, "created", actor_type="ai", actor_name="Helpline agent",
                                to_value="open",
                                note=f"{caller_type} · {category_name} · {priority}"
-                                    + (f" · {why}" if why else ""))
+                                    + (f" · {why}" if why else "")
+                                    + (f" · registered on an outbound call, campaign #{campaign_id}"
+                                       if campaign_id else ""))
         if dept_id:
             eo_db.add_ticket_event(ticket_id, "assigned", actor_type="system", to_value=dept_name or str(dept_id),
                                    note=f"routed by category '{category_name}'")

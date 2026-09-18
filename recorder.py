@@ -81,16 +81,23 @@ class CallRecorder:
 
     # Lifecycle
 
-    async def open(self, source, call_sid=None, caller=None):
+    async def open(self, source, call_sid=None, caller=None, campaign_id=None, campaign_contact_id=None):
         try:
             call_id = uuid.uuid4().hex[:16]
             if not call_sid:
                 call_sid = "web-" + uuid.uuid4().hex[:12]
             self._started_ts = datetime.now(timezone.utc)
+            campaign_type = None
+            if campaign_id not in (None, ""):
+                try:
+                    import eo_db
+                    campaign_type = (eo_db.get_campaign(campaign_id) or {}).get("campaign_type")
+                except Exception:
+                    campaign_type = None
             self.call = {
                 "id": call_id,
                 "call_sid": call_sid,
-                "source": source,                 # 'plivo_inbound' | 'plivo' | 'browser'
+                "source": source,                 # 'plivo_inbound' | 'plivo_campaign' | 'plivo' | 'browser'
                 "caller": caller,
                 "started_at": self._started_ts.isoformat(),
                 "ended_at": None,
@@ -100,6 +107,13 @@ class CallRecorder:
                 "ticket_id": None,                # the (last) ticket registered on this call
                 "ticket_ids": [],
                 "lookup_ticket_ids": [],
+                # outbound campaign dials
+                "campaign_id": int(campaign_id) if campaign_id not in (None, "") else None,
+                "campaign_contact_id": int(campaign_contact_id) if campaign_contact_id not in (None, "") else None,
+                "campaign_type": campaign_type,
+                "outcome": None,                  # record_outcome value
+                "outcome_note": "",
+                "callback_time_text": "",
                 "gemini_model": self.model,
                 "tokens": pricing._empty_tokens(),
                 "gemini_cost_usd": 0.0,
@@ -116,7 +130,8 @@ class CallRecorder:
     def call_meta(self):
         """What the ticket tools need to link a ticket to this call."""
         c = self.call or {}
-        return {"call_id": c.get("id"), "call_sid": c.get("call_sid"), "caller": c.get("caller")}
+        return {"call_id": c.get("id"), "call_sid": c.get("call_sid"), "caller": c.get("caller"),
+                "campaign_id": c.get("campaign_id"), "campaign_contact_id": c.get("campaign_contact_id")}
 
     async def on_event(self, event):
         if self.call is None:
@@ -165,8 +180,11 @@ class CallRecorder:
 
     def _schedule_analysis(self):
         """Hand the finished call to the post-call analysis (summary, sentiment, refine or
-        auto-create the ticket). Guarded: an analysis failure can never affect the call."""
+        auto-create the ticket). A follow-up call only reads a status back, so it is skipped.
+        Guarded: an analysis failure can never affect the call."""
         try:
+            if self.call.get("campaign_type") == "followup":
+                return
             import tickets
             tickets.schedule_post_call(self.call["id"])
         except Exception as e:
@@ -240,6 +258,10 @@ class CallRecorder:
             ids = self.call.get("lookup_ticket_ids") or []
             if tid and tid not in ids:
                 self.call["lookup_ticket_ids"] = ids + [tid]
+        elif name == "record_outcome" and isinstance(result, dict) and result.get("ok"):
+            self.call["outcome"] = result.get("outcome_status")
+            self.call["outcome_note"] = result.get("note") or ""
+            self.call["callback_time_text"] = result.get("callback_time_text") or ""
 
     def _accumulate_usage(self, event):
         snap = {
