@@ -561,7 +561,17 @@ async def plivo_answer(request: Request):
         secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "") == "https"
     ws_url = f"{'wss' if secure else 'ws'}://{host}/plivo/media-stream"
 
-    qp = request.query_params
+    # Plivo sends the call parameters (From, CallUUID, Direction…) in the query string on a
+    # GET application and in the form body on a POST one — the console defaults to POST.
+    # Read both; the query string wins because the parameters WE put on an outbound answer
+    # URL (?caller=, ?campaign=, ?cc=) must never be shadowed by Plivo's own fields.
+    qp = dict(request.query_params)
+    if request.method == "POST":
+        try:
+            for key, value in (await request.form()).items():
+                qp.setdefault(key, str(value))
+        except Exception as e:
+            logger.warning("/plivo/answer: could not read the form body (%s)", e)
     # ?caller= exists only on answer URLs WE built for outbound dials (a test call, or a
     # campaign dial carrying ?campaign=&cc=); a genuine inbound call carries the number in `From`.
     caller = qp.get("caller") or qp.get("From") or qp.get("from") or ""
@@ -585,9 +595,15 @@ async def plivo_answer(request: Request):
 
     _remember_call_meta(call_uuid, caller, direction=direction, trigger=call_ctx.get("trigger") or "",
                         context=call_ctx, campaign_id=campaign_id, campaign_contact_id=cc_id)
-    if call_uuid and GEMINI_API_KEY:
+    if call_uuid:
+        # The media stream finds THIS call's context by this id; without it the session
+        # falls back to the identity-free "systems are down" prompt.
         ws_url += f"?call={quote(call_uuid)}"
-        asyncio.create_task(_prewarm_gemini(call_uuid, call_ctx))
+        if GEMINI_API_KEY:
+            asyncio.create_task(_prewarm_gemini(call_uuid, call_ctx))
+    else:
+        logger.error("/plivo/answer: no CallUUID in the request — the media stream will connect "
+                     "WITHOUT the helpline script. Check the Plivo application's answer method/URL.")
     eh_attr = f' extraHeaders="X-Caller={quote(caller)}"' if caller else ""
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'

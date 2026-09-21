@@ -296,6 +296,13 @@ docker compose exec epp-helpline tar czf - /var/epp-data > epp-backup-$(date +%F
 
 ## Troubleshooting
 
+**Agent answers "our systems are down, call back later" on every call** — the call reached
+the app without its context. The log shows `prompt_chars=374` (the fallback prompt; the real
+script is ~11,000) and, just before it, `INBOUND call - to/from unknown` or an ERROR about a
+missing CallUUID. Cause: the answer webhook did not get Plivo's parameters. Update to a build
+that reads both the query string and the POST form body (Sept 2026 or later); until then set
+the Plivo application's Answer method to **GET**.
+
 **`plivo=NOT configured`** — `PLIVO_AUTH_ID`, `PLIVO_AUTH_TOKEN` or `PLIVO_FROM_NUMBER` is unset.
 
 **Calls connect but there's silence** — the answer webhook must be reachable *from the
