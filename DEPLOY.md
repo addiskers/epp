@@ -17,9 +17,10 @@ One FastAPI app serves the API, the React admin SPA, and the telephony webhooks.
 
 ## Fresh GCP VM (Debian 12/13) — end to end
 
-Tested shape: Compute Engine `e2-small` or larger, Debian 13, one static external IP, a
-DuckDNS name (the other GlobalVox voice boxes use the same). Total time ~20 minutes, most
-of it waiting on the first Docker build.
+Production values: domain **`epp.globalvoxinc.ai`**, helpline number **+91 80 3182 9020**
+(Plivo, Bangalore fixed line → `PLIVO_FROM_NUMBER=+918031829020`). Shape: Compute Engine
+`e2-small` or larger, Debian 13, one static external IP. Total time ~20 minutes, most of it
+waiting on the first Docker build.
 
 ### 1. On the GCP side (console or gcloud, once)
 
@@ -36,8 +37,9 @@ VPC network → IP addresses → promote the VM's ephemeral IP to static.
 
 ### 2. DNS
 
-At duckdns.org create `epp-helpline` (any free name) and point it at the static IP. Wait until
-`nslookup epp-helpline.duckdns.org` returns the IP from your laptop.
+In the `globalvoxinc.ai` zone add an **A record** `epp` → the static IP. Wait until
+`nslookup epp.globalvoxinc.ai` returns that IP from your laptop; Caddy cannot get a
+certificate before DNS resolves.
 
 ### 3. On the VM
 
@@ -52,8 +54,8 @@ curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --d
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
 sudo apt-get update && sudo apt-get install -y caddy git
 
-# The code (Bitbucket asks for your username + an app password with repo read)
-git clone https://bitbucket.org/GlobalVox/epp.git ~/epp && cd ~/epp
+# The code. Two mirrors carry the same main: GitHub (used by the server) and Bitbucket.
+git clone https://github.com/addiskers/epp.git ~/epp && cd ~/epp
 
 # Settings
 cp .env.example .env
@@ -68,8 +70,8 @@ MODEL=gemini-3.1-flash-live-preview
 EPP_ANALYSIS_MODEL=gemini-3.6-flash      # a TEXT model; gemini-3.1-flash does not exist
 PLIVO_AUTH_ID=...
 PLIVO_AUTH_TOKEN=...
-PLIVO_FROM_NUMBER=+91...                 # the helpline number, E.164
-PUBLIC_URL=https://epp-helpline.duckdns.org
+PLIVO_FROM_NUMBER=+918031829020          # the helpline number, E.164
+PUBLIC_URL=https://epp.globalvoxinc.ai
 EPP_ADMIN_USER=admin
 EPP_ADMIN_PASS=<strong password>
 EPP_SESSION_SECRET=<output of: openssl rand -hex 32>
@@ -85,7 +87,7 @@ docker compose up -d --build            # first build: 3-5 minutes
 docker compose logs -f                  # wait for "EPP helpline ready … plivo=ready"
 
 sudo tee /etc/caddy/Caddyfile >/dev/null <<'EOF'
-epp-helpline.duckdns.org {
+epp.globalvoxinc.ai {
     reverse_proxy localhost:8000
 }
 EOF
@@ -95,23 +97,23 @@ sudo systemctl reload caddy             # Caddy fetches the certificate itself
 ### 4. Verify from your laptop, not from the VM
 
 ```bash
-curl https://epp-helpline.duckdns.org/healthz
+curl https://epp.globalvoxinc.ai/healthz
 # {"ok":true,"live_calls":0,"gemini":{"ok":true}}
-curl "https://epp-helpline.duckdns.org/plivo/answer?From=%2B919876543210&CallUUID=x"
-# must start with <?xml … <Stream … wss://epp-helpline.duckdns.org/plivo/media-stream
+curl "https://epp.globalvoxinc.ai/plivo/answer?From=%2B919876543210&CallUUID=x"
+# must start with <?xml … <Stream … wss://epp.globalvoxinc.ai/plivo/media-stream
 ```
 
 If the second one is not XML, Plivo cannot reach you either — fix that before touching Plivo.
 
 ### 5. Plivo
 
-Voice → Applications → your app: **Answer URL** `https://epp-helpline.duckdns.org/plivo/answer`,
+Voice → Applications → your app: **Answer URL** `https://epp.globalvoxinc.ai/plivo/answer`,
 method **GET**. Assign the app to the helpline number. Ring the number: the log shows
 `INBOUND call … from +91…`, then `Plivo stream started`.
 
 ### 6. Sign in
 
-`https://epp-helpline.duckdns.org/admin` with `EPP_ADMIN_USER` / `EPP_ADMIN_PASS`. Change the
+`https://epp.globalvoxinc.ai/admin` with `EPP_ADMIN_USER` / `EPP_ADMIN_PASS`. Change the
 password on Profile, then follow **First run** below.
 
 ### Day-2
