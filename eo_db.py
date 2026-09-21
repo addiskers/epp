@@ -23,7 +23,9 @@ logger = logging.getLogger(__name__)
 # Bumped whenever the schema changes shape. Stamped into PRAGMA user_version.
 SCHEMA_VERSION = 3
 
-_DATA_DIR = os.getenv("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
+# `or`, not a getenv default: .env.example ships DATA_DIR= blank ("leave blank outside Docker"),
+# and a blank string must mean the default, not a database at the filesystem root.
+_DATA_DIR = os.getenv("DATA_DIR") or os.path.join(os.path.dirname(__file__), "data")
 _DB_PATH = os.path.join(_DATA_DIR, "epp.db")
 
 _conn: sqlite3.Connection | None = None
