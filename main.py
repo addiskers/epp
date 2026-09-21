@@ -42,6 +42,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from gemini_live import GeminiLive
+from hallucination_guard import HallucinationGuard
 from plivo_handler import PlivoMediaBridge
 
 import agent_tools
@@ -192,6 +193,27 @@ MAX_LIVE_CALLS = _max_live_calls()
 def live_room() -> int:
     """How many more calls may start right now (>= 0)."""
     return max(0, MAX_LIVE_CALLS - len(_active_calls))
+
+
+# The last time the voice model refused or dropped a session (spending cap, bad key, quota).
+# A caller then hears silence; the dashboard and the browser test show this so nobody spends
+# an afternoon debugging the phone line.
+_GEMINI_ERROR_TTL_S = 600.0
+_last_gemini_error: dict = {}
+
+
+def note_gemini_error(message):
+    _last_gemini_error.update({"at": time.time(), "error": str(message or "unknown error")[:300]})
+    logger.error("VOICE MODEL ERROR (callers hear silence until fixed): %s", _last_gemini_error["error"])
+
+
+def gemini_status() -> dict:
+    """{} when healthy or the last error is stale; else {"error", "at" (ISO)}."""
+    if not _last_gemini_error or (time.time() - _last_gemini_error.get("at", 0)) > _GEMINI_ERROR_TTL_S:
+        return {}
+    from datetime import datetime, timezone
+    return {"error": _last_gemini_error["error"],
+            "at": datetime.fromtimestamp(_last_gemini_error["at"], timezone.utc).isoformat()}
 
 
 # Metadata stashed at /plivo/answer keyed by CallUUID; Plivo drops <Stream extraHeaders> on
@@ -349,7 +371,7 @@ async def root():
 
 @app.get("/healthz")
 async def healthz():
-    return {"ok": True, "live_calls": len(_active_calls)}
+    return {"ok": True, "live_calls": len(_active_calls), "gemini": gemini_status() or {"ok": True}}
 
 
 # ---------------------------------------------------------------------------------------
@@ -423,9 +445,13 @@ async def websocket_endpoint(websocket: WebSocket):
     MAX_RETRIES = 3
     RETRY_DELAYS = [2, 4, 8]
     ending = False
+    # Same guard as the phone bridge: a spoken reference number with no ticket behind it is
+    # pushed back once the turn completes.
+    guard = HallucinationGuard(call_label="browser")
+    turn_text = ""
 
     async def run_session_with_retry():
-        nonlocal ending
+        nonlocal ending, turn_text
         # The opening trigger: the Live API produces no audio until it receives a turn.
         await text_input_queue.put(ctx.get("trigger") or prompt_render.DEFAULT_TRIGGER)
         for attempt in range(MAX_RETRIES + 1):
@@ -441,6 +467,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     if not event:
                         continue
                     etype = event.get("type")
+                    if etype == "error":
+                        note_gemini_error(event.get("error", ""))
                     if etype == "error" and attempt < MAX_RETRIES:
                         error_msg = event.get("error", "")
                         if "exhausted" in error_msg or "quota" in error_msg.lower():
@@ -467,6 +495,15 @@ async def websocket_endpoint(websocket: WebSocket):
                         await websocket.send_json(event)
                     except RuntimeError:
                         return
+                    if etype == "gemini":
+                        turn_text += " " + (event.get("text") or "")
+                    elif etype == "tool_call":
+                        guard.on_tool_call(event.get("name"), event.get("result"))
+                    elif etype in ("turn_complete", "interrupted"):
+                        nudge = guard.check(turn_text) if etype == "turn_complete" else None
+                        turn_text = ""
+                        if nudge and not ending:
+                            await text_input_queue.put(nudge)
                     # Gemini interleaves end_call with the closing's audio: keep draining this
                     # turn and close on its turn_complete (a watchdog bounds the wait).
                     if etype == "end_call":
@@ -609,6 +646,8 @@ async def plivo_media_stream(websocket: WebSocket):
                          ticket_id=(recorder.call or {}).get("ticket_id"))
         else:
             await recorder.on_event(event)
+            if etype == "error":
+                note_gemini_error(event.get("error", ""))
             if etype == "tool_call":
                 # Never fan the caller's details out to a watcher: only the fact and the id.
                 res = event.get("result") or {}

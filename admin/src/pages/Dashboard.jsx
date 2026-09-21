@@ -26,6 +26,15 @@ export default function Dashboard() {
       <PageHeader title="Dashboard"
                   sub={isAdmin ? 'Tickets, calls and what needs attention' : `Tickets assigned to ${user?.department_name || 'your department'}`} />
       {err && <div className="err">{err}</div>}
+      {s?.gemini_status?.error && (
+        <div style={{ background: 'var(--red-soft)', border: '1px solid var(--red)', borderRadius: 'var(--radius-sm)',
+                      padding: '10px 14px', fontSize: '0.85rem' }}>
+          <b style={{ color: 'var(--red)' }}>The voice model is refusing calls.</b>{' '}
+          {s.gemini_status.error}{' '}
+          <span className="muted">(last seen {fmtDate(s.gemini_status.at)}). Callers hear silence until this is fixed —
+          check the AI Studio spending cap and the API key.</span>
+        </div>
+      )}
 
       <div className="grid stat-grid">
         <Stat label="Open tickets" value={t?.open} sub={`${t?.total ?? '—'} total`} />

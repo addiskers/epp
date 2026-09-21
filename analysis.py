@@ -133,16 +133,28 @@ def parse(text: str) -> dict | None:
     return out
 
 
+_last_error = ""
+
+
+def last_error() -> str:
+    """The most recent failure reason (e.g. a spending-cap or auth error), for the call record."""
+    return _last_error
+
+
 async def analyze(call, categories, ticket=None) -> dict | None:
+    global _last_error
     prompt = build_prompt(call, categories, ticket)
+    _last_error = ""
     for attempt in range(2):
         try:
             text = await _generate(prompt)
             result = parse(text)
             if result:
                 return result
+            _last_error = "the analysis model returned unparseable output"
             logger.warning("post-call analysis returned unparseable output (attempt %d)", attempt + 1)
         except Exception as e:
+            _last_error = f"{type(e).__name__}: {e}"[:300]
             logger.warning("post-call analysis failed (attempt %d): %s", attempt + 1, e)
         await asyncio.sleep(1.0)
     return None

@@ -32,14 +32,46 @@ export default function CallDrawer({ call, onClose }) {
             ))}
           </div>
         )}
+        {/* Which tools the agent actually called. A spoken "reference number" with no create_ticket
+            row here is the agent inventing one; a create_ticket with FAILED is a server-side error. */}
+        {!call._loading && (
+          <div className="card" style={{ marginBottom: 14, padding: 12 }}>
+            <label>Tool calls</label>
+            {!(call.tool_calls || []).length
+              ? <div className="muted" style={{ fontSize: '0.8rem' }}>None — the agent never called create_ticket or lookup_ticket on this call.</div>
+              : (call.tool_calls || []).map((t, i) => {
+                const r = t.result || {}
+                const failed = r.ok === false || r.found === false
+                return (
+                  <div key={i} style={{ fontSize: '0.8rem', marginTop: 4, display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                    <span style={{ fontFamily: 'var(--mono)' }}>{t.name}</span>
+                    <span className={`pill ${failed ? 'red' : 'green'}`}>{failed ? 'failed' : 'ok'}</span>
+                    <span className="muted">
+                      {r.ticket_id || ''}{r.status ? ` · ${r.status}` : ''}{r.outcome_status ? ` · ${r.outcome_status}` : ''}
+                      {r.error ? ` · ${r.error}` : ''}
+                    </span>
+                  </div>
+                )
+              })}
+          </div>
+        )}
         {call.analysis && (
           <div className="card" style={{ marginBottom: 14, padding: 12 }}>
             <label>Post-call analysis</label>
-            <div style={{ fontSize: '0.84rem' }}>{call.analysis.summary}</div>
-            <div className="muted" style={{ fontSize: '0.76rem', marginTop: 4 }}>
-              {call.analysis.intent} · sentiment {call.analysis.sentiment_label} ({call.analysis.sentiment_score})
-              {call.analysis.is_status_inquiry ? ' · status inquiry' : ''}
-            </div>
+            {call.analysis.status && call.analysis.status !== 'done' ? (
+              <div style={{ fontSize: '0.82rem', color: call.analysis.status === 'failed' ? 'var(--red)' : 'var(--muted)' }}>
+                {call.analysis.status === 'failed' ? 'Failed' : 'Skipped'}: {call.analysis.error}
+                {call.analysis.status === 'failed' && <div className="muted" style={{ marginTop: 4 }}>No summary, and no ticket could be created from the transcript.</div>}
+              </div>
+            ) : (
+              <>
+                <div style={{ fontSize: '0.84rem' }}>{call.analysis.summary}</div>
+                <div className="muted" style={{ fontSize: '0.76rem', marginTop: 4 }}>
+                  {call.analysis.intent} · sentiment {call.analysis.sentiment_label} ({call.analysis.sentiment_score})
+                  {call.analysis.is_status_inquiry ? ' · status inquiry' : ''}
+                </div>
+              </>
+            )}
           </div>
         )}
         <label>Transcript</label>

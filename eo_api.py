@@ -555,7 +555,17 @@ async def summary(request: Request):
         calls = await store.summary({})
         out["calls"] = calls
         out["live_calls"] = _active_calls()
+        out["gemini_status"] = _gemini_status()
     return JSONResponse(out)
+
+
+def _gemini_status():
+    """The last voice-model failure, if recent, so the dashboard can say why calls are silent."""
+    try:
+        import main
+        return main.gemini_status()
+    except Exception:
+        return {}
 
 
 @router.post("/live/token")

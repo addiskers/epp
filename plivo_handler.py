@@ -45,6 +45,7 @@ except ImportError:          # pragma: no cover
 logger = logging.getLogger(__name__)
 
 from agent_tools import COMPLETION_TOOLS
+from hallucination_guard import HallucinationGuard
 # The helpline's tools (create_ticket / lookup_ticket) are BLOCKING: the turn that follows a
 # tool result is the agent SPEAKING that result (the ticket number, the status), never filler.
 # The old silent-tool machinery (mute nudge, post-record audio suppression) is therefore off.
@@ -398,6 +399,8 @@ class PlivoMediaBridge:
         self._rsvp_recorded = False              # set True once record_outcome fires
         self._last_activity = time.monotonic()   # last time either party spoke / a turn ended
         self._turn_text = ""                     # accumulated agent transcript for the current turn
+        # A spoken "your reference number is…" with no create_ticket behind it gets pushed back (see hallucination_guard).
+        self._guard = HallucinationGuard(call_label="phone")
         self._suppress_turn = False              # drop the rest of this turn's audio (repeat detected)
         self._suppress_turn_at = 0.0             # when the repeat mute was armed (self-expires — see audio_output_callback)
         self._last_gemini_text_at = 0.0          # last agent output-transcription chunk (the turn is still streaming)
@@ -1425,8 +1428,10 @@ class PlivoMediaBridge:
                         logger.error(f"Gemini error during Plivo call: {event}")
                         break
                     # Feed the idle-hangup guard: mark the task done + stamp any activity.
-                    if etype == "tool_call" and event.get("name") in COMPLETION_TOOLS:
-                        await self._on_task_completed(event.get("name"), event.get("result"))
+                    if etype == "tool_call":
+                        self._guard.on_tool_call(event.get("name"), event.get("result"))
+                        if event.get("name") in COMPLETION_TOOLS:
+                            await self._on_task_completed(event.get("name"), event.get("result"))
                     # Stamp activity on caller AND agent speech so the idle timer only counts TRUE mutual silence.
                     if etype in ("user", "interrupted", "turn_complete", "gemini"):
                         self._last_activity = time.monotonic()
@@ -1439,6 +1444,9 @@ class PlivoMediaBridge:
                         if etype == "turn_complete":
                             self._cancel_resume()        # the turn finished on its own — no resume needed
                             self._last_agent_asked_question = _looks_like_agent_question(self._turn_text)
+                            nudge = self._guard.check(self._turn_text)
+                            if nudge and not self._ending:
+                                await self.text_input_queue.put(nudge)
                             # After RSVP, a turn that READS LIKE A CLOSING ends the call muted so a bare "Hello"
                             # cannot re-engage; a checklist step / answer / question stays armed and waits.
                             self._maybe_end_after_closing_turn()

@@ -147,10 +147,18 @@ def _s(v, max_len=300):
 # Tool handlers (sync; called from GeminiLive's executor)
 # ---------------------------------------------------------------------------------------
 _CONFIRMATION_INSTRUCTION = (
-    "SYSTEM NOTE — the ticket is registered. Now speak THE CONFIRMATION LINE in the caller's "
-    "language, reading the reference number EXACTLY as spoken_ticket_id, slowly. Then repeat only "
-    "the number once, then ask if there is anything else. Do not promise any outcome."
+    "SYSTEM NOTE — the ticket is registered. Say say_now in the caller's language, slowly, exactly as "
+    "given (the number letter by letter, digit by digit). Then repeat only the number once, then ask "
+    "if there is anything else. Do not promise any outcome. Never say a number other than this one."
 )
+
+
+def confirmation_line(ticket_id: str) -> str:
+    """The verbatim confirmation sentence with the real number embedded. Handed to the model in
+    the tool result so it never has to compose (or invent) the number itself."""
+    return ("Thank you. Your concern has been successfully registered. Your reference number is "
+            f"{spoken_ticket_id(ticket_id)}. Your concern will be forwarded to the concerned "
+            "department for review and action.")
 
 
 def create_from_tool(args: dict, call_meta: dict | None = None) -> dict:
@@ -215,6 +223,7 @@ def create_from_tool(args: dict, call_meta: dict | None = None) -> dict:
             "ok": True,
             "ticket_id": ticket_id,
             "spoken_ticket_id": spoken_ticket_id(ticket_id),
+            "say_now": confirmation_line(ticket_id),
             "status": "open",
             "status_spoken": STATUS_LABEL["open"],
             "assigned_department": dept_name or "",
@@ -457,22 +466,27 @@ async def post_call(call_id: str):
     """Run once the call record is final: summarise, classify, and either refine the
     ticket the live agent created or create one from the transcript when it did not.
     Returns the ticket (or None). Never raises."""
+    call = None
     try:
         import analysis
         import store
-        if not analysis_enabled():
-            return None
         call = await store.load_call(call_id)
         if not call:
             return None
+        if not analysis_enabled():
+            await _mark_analysis(store, call, "skipped", "EPP_ANALYSIS_ENABLED is off")
+            return None
         if _caller_words(call) < 8:
             logger.info("post-call %s: too little caller speech to analyse", call_id)
+            await _mark_analysis(store, call, "skipped", "too little caller speech to analyse")
             return None
         categories = eo_db.list_categories(active_only=True)
         existing = eo_db.tickets_by_call(call_id)
         ticket = existing[-1] if existing else None
         result = await analysis.analyze(call, categories, ticket)
         if not result:
+            await _mark_analysis(store, call, "failed",
+                                 analysis.last_error() or "the analysis model returned nothing usable")
             return None
 
         if ticket is None and result.get("should_create_ticket") and _s(result.get("description"), 6000):
@@ -507,10 +521,12 @@ async def post_call(call_id: str):
             ticket = apply_analysis(ticket, result, categories)
 
         call["analysis"] = {
+            "status": "done",
             "summary": result.get("summary"), "intent": result.get("intent"),
             "sentiment_score": result.get("sentiment_score"), "sentiment_label": result.get("sentiment_label"),
             "escalation_flags": result.get("escalation_flags") or [],
             "is_status_inquiry": bool(result.get("is_status_inquiry")),
+            "should_create_ticket": bool(result.get("should_create_ticket")),
             "analysed_at": _now_iso(),
         }
         if ticket is not None:
@@ -520,9 +536,22 @@ async def post_call(call_id: str):
                 call["ticket_ids"] = ids + [ticket["ticket_id"]]
         await store.save_call(call)
         return ticket
-    except Exception:
+    except Exception as e:
         logger.exception("post-call analysis failed for %s", call_id)
+        if call is not None:
+            try:
+                import store
+                await _mark_analysis(store, call, "failed", f"{type(e).__name__}: {e}")
+            except Exception:
+                pass
         return None
+
+
+async def _mark_analysis(store, call, status, reason):
+    """Leave a visible trace on the call record when the post-call pass could not run — the
+    admin's call drawer shows it, so a missing ticket has a stated reason instead of silence."""
+    call["analysis"] = {"status": status, "error": str(reason or "")[:500], "analysed_at": _now_iso()}
+    await store.save_call(call)
 
 
 def schedule_post_call(call_id: str):

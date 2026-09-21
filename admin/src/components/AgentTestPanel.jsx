@@ -168,7 +168,21 @@ function MicTest({ agent, disabled, onError }) {
             const msg = JSON.parse(e.data)
             if (msg.type === 'gemini' && msg.text) setLines((l) => [...l, ['agent', msg.text]])
             if (msg.type === 'user' && msg.text) setLines((l) => [...l, ['you', msg.text]])
-            if (msg.type === 'tool_call') setLines((l) => [...l, ['tool', `${msg.name} → ${JSON.stringify(msg.result?.ticket_id || msg.result?.status || msg.result?.ok)}`]])
+            if (msg.type === 'tool_call') {
+              const r = msg.result || {}
+              const ok = r.ok === false || r.found === false ? 'FAILED' : (r.ticket_id || r.status || 'ok')
+              setLines((l) => [...l, ['tool', `${msg.name} → ${ok}${r.error ? ` (${r.error})` : ''}`]])
+            }
+            // The voice model refused or dropped the session (quota, spending cap, bad key…).
+            // Without this line the tester hears silence and has no idea why.
+            if (msg.type === 'error') {
+              const text = String(msg.error || 'unknown error')
+              setLines((l) => [...l, ['error', `Voice model error: ${text}`]])
+              onError(text.includes('spending cap') || text.includes('quota') || text.includes('exhausted')
+                ? 'The Gemini project is out of quota (spending cap). No call can be answered until it is raised in AI Studio.'
+                : `Gemini refused the session: ${text}`)
+            }
+            if (msg.type === 'status' && msg.text) setLines((l) => [...l, ['status', msg.text]])
           } catch {}
           return
         }
@@ -201,8 +215,9 @@ function MicTest({ agent, disabled, onError }) {
           <div style={{ ...preStyle, maxHeight: 220 }}>
             {lines.map(([who, text], i) => (
               <div key={i} style={{ marginBottom: 4 }}>
-                <span style={{ color: who === 'agent' ? 'var(--green)' : who === 'tool' ? 'var(--amber)' : 'var(--blue)' }}>
-                  {who === 'agent' ? 'Agent' : who === 'tool' ? 'Tool' : 'You'}:
+                <span style={{ color: who === 'agent' ? 'var(--green)' : who === 'tool' ? 'var(--amber)'
+                  : who === 'error' ? 'var(--red)' : who === 'status' ? 'var(--muted)' : 'var(--blue)' }}>
+                  {who === 'agent' ? 'Agent' : who === 'tool' ? 'Tool' : who === 'error' ? 'Error' : who === 'status' ? '·' : 'You'}:
                 </span>{' '}{text}
               </div>
             ))}

@@ -128,6 +128,11 @@ remove any failure from `EPP_ENABLED_LANGUAGES`.
 Per language: ring the helpline, pick the language, register an employee concern, note the
 number, ring back and ask for its status.
 
+**If a language comes out as Hindi (Gujarati and Marathi are the usual cases):** the session's
+speech accent is fixed to `en-IN` (`EO_SPEECH_LANGUAGE_CODE`), which biases the model toward
+English/Hindi. On the Agent page clear the *Accent* field (or set the env var blank) and repeat
+the call. If that fixes it, keep it blank and note it here.
+
 ---
 
 ## Data, privacy and backups
@@ -177,8 +182,17 @@ means Plivo can't reach you either.
 **`/admin` 503s** — the SPA isn't built. `cd admin && npm run build`.
 
 **A ticket has no AI summary** — `EPP_ANALYSIS_ENABLED` is false, `EPP_ANALYSIS_MODEL` is not a
-model your key can use, or the caller said fewer than eight words. Check the log for
-`post-call analysis failed`.
+model your key can use, or the caller said fewer than eight words. Open the call in Call logs: the
+drawer shows the analysis status and the reason.
+
+**The agent is silent on every call** — the Gemini project is refusing sessions. The log shows
+`APIError: 1011 … exceeded its monthly spending cap` (raise it at https://ai.studio/spend) or an
+auth error (`GEMINI_API_KEY`). The Dashboard shows a red banner with the last error; the Agent page's
+browser test prints it in the transcript box. No code change fixes this.
+
+**The agent said a reference number but no ticket exists** — it spoke without calling
+`create_ticket`. The runtime guard now nudges it to register properly (log line `HALLUCINATION
+GUARD`); the call drawer's "Tool calls" section shows whether `create_ticket` actually ran.
 
 **Agent says a sentence with a gap** — a placeholder had no data. Agent → Show the script shows
 which, in an amber banner.

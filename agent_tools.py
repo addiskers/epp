@@ -40,8 +40,9 @@ LOOKUP_TICKET_DECLARATION = {
         "properties": {
             "ticket_number": {
                 "type": "string",
-                "description": "The reference number as the caller gave it, e.g. 'EPP-2026-000123', "
-                               "'EPP 2026 123' or just '123'. Do not reformat it.",
+                "description": "The reference number exactly as the caller said it — with or without the "
+                               "letter prefix, with or without dashes, or just the last digits. Do not "
+                               "reformat it and never fill in a number the caller did not say.",
             },
         },
         "required": ["ticket_number"],

@@ -147,13 +147,21 @@ def test_render_prompt_never_raises_on_missing_rows():
 
 
 # ------------------------------------------------- the shipped intake agent: requirements
-def test_intake_prompt_carries_the_verbatim_greeting_and_confirmation_line():
+def test_intake_prompt_carries_the_verbatim_greeting_but_not_the_confirmation_line():
+    """The confirmation sentence is deliberately NOT in the prompt any more: with it there the
+    model recited 'registered, your reference number is …' without calling create_ticket. The
+    tool result hands the sentence over (say_now) with the real number embedded."""
+    import tickets
     t = epp_seeds.INTAKE_PROMPT
     assert '"Welcome to {helpline_name}.' in t
-    assert "Your concern has been successfully registered. Your reference number is" in t
-    assert "forwarded to the concerned department for review and action" in t
+    assert "Your concern has been successfully registered" not in t
+    assert "say_now" in t and "You do NOT have a reference number until create_ticket" in t
     assert "Please explain your concern in detail" in t
     assert "Do you have your reference number?" in t
+    line = tickets.confirmation_line("EPP-2026-000001")
+    assert line.startswith("Thank you. Your concern has been successfully registered. Your reference number is ")
+    assert "E, P, P — two zero two six — zero zero zero zero zero one" in line
+    assert line.endswith("forwarded to the concerned department for review and action.")
 
 
 def test_intake_prompt_never_promises_outcomes_or_invents_status():
@@ -171,9 +179,18 @@ def test_intake_prompt_never_promises_outcomes_or_invents_status():
 
 def test_intake_prompt_asks_every_required_detail_per_caller_type():
     t = epp_seeds.INTAKE_PROMPT
-    assert "Customer: their full name; their company's name; their contact number." in t
-    assert "Vendor: their full name; their vendor code" in t
-    assert "Employee: their full name; their employee code or employee ID; their department" in t
+    # one numbered item per turn, per caller type
+    assert "ONE item per turn" in t and "Never bundle two items into one question" in t
+    customer = t.split("Customer:\n")[1].split("Vendor:")[0]
+    assert ["full name", "company's name", "contact number"] == [
+        k for k in ("full name", "company's name", "contact number") if k in customer]
+    vendor = t.split("Vendor:\n")[1].split("Employee:")[0]
+    assert "vendor code" in vendor and "contact number" in vendor
+    employee = t.split("Employee:\n")[1].split("For the contact number")[0]
+    for k in ("full name", "employee code or employee ID", "department", "plant or location", "contact number"):
+        assert k in employee, k
+    # corrections are a first-class rule now (the Sneha/Neha loop)
+    assert "## CORRECTIONS" in t and "never return to the old one" in t
     for q in ("When did this start?", "Has this happened before?", "Have you reported this before",
               "Is anyone else involved?", "Is this affecting operations, your work, or anyone's safety?"):
         assert q in t, q

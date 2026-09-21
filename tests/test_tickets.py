@@ -66,7 +66,10 @@ def test_create_ticket_routes_salary_to_finance_and_links_the_call(db):
     assert res["ticket_id"].startswith("EPP-") and res["ticket_id"].endswith("-000001")
     assert res["spoken_ticket_id"].startswith("E, P, P")
     assert res["assigned_department"] == "Finance" and res["priority"] == "medium"
-    assert "CONFIRMATION LINE" in res["instruction"]
+    assert "say_now" in res["instruction"]
+    # the exact sentence the model must read, with the real number spelled out — never composed by the model
+    assert res["say_now"].startswith("Thank you. Your concern has been successfully registered. Your reference number is E, P, P")
+    assert res["say_now"].endswith("forwarded to the concerned department for review and action.")
     t = db.get_ticket(res["ticket_id"])
     assert t["caller_type"] == "employee" and t["language"] == "hi"
     assert t["contact_number"] == "+919876543210"            # defaulted to the caller id
