@@ -51,6 +51,8 @@ Thumbs.db
 
 # EPP helpline
 .env
+.env.*
+!.env.example
 .venv/
 venv/
 data/
