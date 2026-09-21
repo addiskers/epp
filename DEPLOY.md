@@ -64,6 +64,16 @@ docker compose up -d --build
 
 The `epp-data` volume persists: tickets, users, routing config, call records and recordings.
 
+**The agent's script lives in the database, not in the code.** A release that changes the
+shipped script does not change what a deployed agent says until an admin opens **Agent →
+Edit & test → Reset to shipped script**. The boot log tells you when that is needed:
+
+```
+WARNING:eo_db:STALE AGENT PROMPT: 'EPP Support Intake' (id=1) is behind the shipped script — missing 'say_now' …
+```
+
+Any wording the client customised on the Agent page is lost by the reset; copy it out first.
+
 ---
 
 ## Without Docker

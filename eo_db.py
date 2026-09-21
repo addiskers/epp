@@ -256,6 +256,58 @@ def init() -> None:
     _seed_departments()
     _seed_categories()
     _seed_agents()
+    # Seeding never overwrites an operator's prompt, so a redeploy can leave last month's
+    # script in the database while the code is new. Say so on every boot rather than waiting
+    # for a caller to hear the old behaviour.
+    warn_about_stale_agents()
+
+
+# Fragments every CURRENT shipped agent prompt carries, with what a prompt missing them still
+# does on a live call. Add a line here whenever a prompt fix is worth forcing a reset for.
+_REQUIRED_FRAGMENTS = {
+    "epp_intake": (
+        ("say_now", "may invent a reference number instead of calling create_ticket"),
+        ("## CORRECTIONS", "ignores name corrections and loops the same question"),
+        ("ONE question per turn", "bundles two questions into one breath"),
+        ("never Hindi", "may answer a Gujarati or Marathi caller in Hindi"),
+    ),
+    "epp_followup": (("## THE FLOW", "missing the follow-up flow"),),
+    "epp_announcement": (("## THE MESSAGE", "missing the message section"),),
+}
+
+
+def stale_agent_reasons(agent) -> list:
+    """Why this agent's prompt is behind the shipped one. Empty list = current.
+
+    Checks for the presence of fragments, not equality with the seed, so an operator's own
+    additions (house style, extra rules) never count as stale."""
+    agent = agent or {}
+    text = agent.get("prompt_template") or ""
+    if not text:
+        return []
+    out = []
+    for fragment, consequence in _REQUIRED_FRAGMENTS.get(agent.get("slug") or "", ()):
+        if fragment not in text:
+            out.append(f"missing '{fragment}' — {consequence}")
+    return out
+
+
+def warn_about_stale_agents() -> list:
+    """Log a loud warning for every agent row carrying old prompt text. Returns them."""
+    stale = []
+    try:
+        for a in list_agents(active_only=False):
+            reasons = stale_agent_reasons(a)
+            if reasons:
+                stale.append(a)
+                logger.warning(
+                    "STALE AGENT PROMPT: '%s' (id=%s) is behind the shipped script — %s. Callers hear the "
+                    "OLD behaviour until an admin opens the Agent page and clicks 'Reset to shipped script' "
+                    "(or POST /api/epp/agents/%s/reset).",
+                    a.get("name"), a.get("id"), "; ".join(reasons), a.get("id"))
+    except Exception:
+        logger.debug("stale-agent check failed", exc_info=True)
+    return stale
 
 
 def schema_version() -> int:
