@@ -10,7 +10,7 @@ def test_fresh_schema_has_every_table_and_is_stamped(fresh_eo_db):
     tables = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
     assert {"users", "departments", "categories", "agents", "tickets", "ticket_events",
-            "audit_log", "ticket_sequences"} <= tables
+            "audit_log", "ticket_sequences", "settings", "agent_versions"} <= tables
     assert eo_db.schema_version() == eo_db.SCHEMA_VERSION
     eo_db.init()                                     # idempotent
     assert eo_db.schema_version() == eo_db.SCHEMA_VERSION

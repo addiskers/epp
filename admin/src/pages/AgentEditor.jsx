@@ -62,6 +62,9 @@ export default function AgentEditor() {
         back={<Link to="/agents" className="muted" style={{ fontSize: '0.82rem' }}>← Agent</Link>}
         actions={<>
           {saved && <span className="pill green" style={{ marginRight: 8 }}>Saved</span>}
+          {agent.script_state === 'shipped'
+            ? <span className="pill green" title="This is the shipped script, untouched. New versions apply automatically on the next deploy." style={{ marginRight: 8 }}>Shipped script</span>
+            : <span className="pill amber" title="Someone edited this script. Deploys leave it alone; the server log says when it is behind the shipped one. Reset to go back to automatic updates." style={{ marginRight: 8 }}>Customised</span>}
           <button className="btn ghost" disabled={busy} onClick={reset}>Reset to shipped script</button>
           <button className="btn" disabled={busy || !dirty} onClick={save}>{busy ? 'Saving…' : 'Save changes'}</button>
         </>} />

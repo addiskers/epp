@@ -14,7 +14,7 @@ def test_schema_v3_has_campaign_tables(fresh_eo_db):
     tables = {r[0] for r in db.get_conn().execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"contacts", "campaigns", "campaign_contacts"} <= tables
-    assert db.schema_version() == 3
+    assert db.schema_version() == db.SCHEMA_VERSION >= 3
     assert db.CAMPAIGN_TYPES == ("intake", "followup", "announcement")
 
 

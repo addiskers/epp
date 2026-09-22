@@ -630,10 +630,16 @@ async def call_audio(call_id: str, request: Request):
 # ---------------------------------------------------------------------------------------
 # Agents (admin)
 # ---------------------------------------------------------------------------------------
+def _agent_public(a):
+    """The row plus whether its script is the shipped one (auto-updates on deploy) or customised."""
+    return dict(a, script_state=eo_db.agent_script_state(a))
+
+
 @router.get("/agents")
 async def agents_list(request: Request):
     eo_auth.require_admin(request)
-    return JSONResponse({"items": eo_db.list_agents(), "placeholders": sorted(prompt_render.KNOWN_PLACEHOLDERS)})
+    return JSONResponse({"items": [_agent_public(a) for a in eo_db.list_agents()],
+                         "placeholders": sorted(prompt_render.KNOWN_PLACEHOLDERS)})
 
 
 def _agent_or_404(agent_id):
@@ -646,7 +652,15 @@ def _agent_or_404(agent_id):
 @router.get("/agents/{agent_id}")
 async def agents_detail(agent_id: int, request: Request):
     eo_auth.require_admin(request)
-    return JSONResponse(_agent_or_404(agent_id))
+    return JSONResponse(_agent_public(_agent_or_404(agent_id)))
+
+
+@router.get("/agents/{agent_id}/versions")
+async def agents_versions(agent_id: int, request: Request):
+    """Every script text an auto-update or a reset replaced on this agent, newest first."""
+    eo_auth.require_admin(request)
+    _agent_or_404(agent_id)
+    return JSONResponse({"items": eo_db.list_agent_versions(agent_id)})
 
 
 @router.patch("/agents/{agent_id}")
@@ -682,18 +696,18 @@ async def agents_update(agent_id: int, request: Request):
     eo_db.update_agent(agent_id, **fields)
     _invalidate_call_cache()
     audit.log("agent_updated", user=admin, target=f"agent:{agent_id}", detail=sorted(fields.keys()), request=request)
-    return JSONResponse(eo_db.get_agent(agent_id))
+    return JSONResponse(_agent_public(eo_db.get_agent(agent_id)))
 
 
 @router.post("/agents/{agent_id}/reset")
 async def agents_reset(agent_id: int, request: Request):
     admin = eo_auth.require_admin(request)
     a = _agent_or_404(agent_id)
-    if not eo_db.refresh_seed_agent(a["slug"]):
+    if not eo_db.refresh_seed_agent(a["slug"], by=admin["username"]):
         raise HTTPException(status_code=400, detail="This agent has no shipped template to reset to")
     _invalidate_call_cache()
     audit.log("agent_reset", user=admin, target=f"agent:{agent_id}", request=request)
-    return JSONResponse(eo_db.get_agent(agent_id))
+    return JSONResponse(_agent_public(eo_db.get_agent(agent_id)))
 
 
 @router.post("/agents/{agent_id}/preview")
@@ -1030,7 +1044,7 @@ async def scheduler_toggle(request: Request):
     admin = eo_auth.require_admin(request)
     body = await _body(request)
     enabled = bool(body.get("enabled", not campaign_runner.is_enabled()))
-    campaign_runner.set_override(enabled)
+    campaign_runner.set_override(enabled, by=admin["username"])
     audit.log("scheduler_toggled", user=admin, detail={"enabled": enabled}, request=request)
     return {"ok": True, "enabled": enabled}
 

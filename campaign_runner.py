@@ -34,10 +34,6 @@ logger = logging.getLogger(__name__)
 # Outcomes meaning "no live person gave us an answer" — retried like a ring-out.
 _UNANSWERED_OUTCOMES = frozenset({"callback", "not_reachable"})
 
-# In-memory admin override (None = follow env). Set via the admin toggle endpoint.
-_enabled_override = None
-
-
 def _cfg_int(name, default):
     """EPP_* first, the legacy EO_* spelling second, then the default."""
     for key in (name, name.replace("EPP_", "EO_", 1)):
@@ -54,15 +50,25 @@ def _max_active_campaigns():
     return campaigns.max_active()
 
 
-def set_override(value):
-    """True/False to force on/off, None to follow the env var."""
-    global _enabled_override
-    _enabled_override = value
+def set_override(value, by=""):
+    """True/False to force on/off, None to follow the env var. Persisted in the settings table:
+    the admin's kill switch must survive a restart or a redeploy."""
+    try:
+        if value is None:
+            eo_db.delete_setting("scheduler_enabled")
+        else:
+            eo_db.set_setting("scheduler_enabled", bool(value), updated_by=by)
+    except Exception:
+        logger.exception("could not persist the scheduler switch")
 
 
 def is_enabled():
-    if _enabled_override is not None:
-        return _enabled_override
+    try:
+        stored = eo_db.get_setting("scheduler_enabled")
+    except Exception:
+        stored = None
+    if stored is not None:
+        return bool(stored)
     raw = os.getenv("EPP_CAMPAIGN_RUNNER_ENABLED", os.getenv("EO_CAMPAIGN_RUNNER_ENABLED", "true"))
     return raw.strip().lower() not in ("0", "false", "no", "off")
 

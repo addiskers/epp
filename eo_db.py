@@ -21,7 +21,8 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 # Bumped whenever the schema changes shape. Stamped into PRAGMA user_version.
-SCHEMA_VERSION = 3
+# v4: settings (key/value), agents.shipped_hash + agent_versions (script auto-update with backups).
+SCHEMA_VERSION = 4
 
 # `or`, not a getenv default: .env.example ships DATA_DIR= blank ("leave blank outside Docker"),
 # and a blank string must mean the default, not a database at the filesystem root.
@@ -104,6 +105,7 @@ CREATE TABLE IF NOT EXISTS agents (
     known_caller_trigger_template TEXT NOT NULL DEFAULT '', -- first-turn trigger when the number is recognised
     voice_name           TEXT NOT NULL DEFAULT '',
     speech_language_code TEXT NOT NULL DEFAULT '',
+    shipped_hash         TEXT NOT NULL DEFAULT '',      -- hash of the shipped script last applied; '' = pre-v4 row
     active               INTEGER NOT NULL DEFAULT 1,
     created_at           TEXT NOT NULL,
     updated_at           TEXT NOT NULL
@@ -239,7 +241,34 @@ CREATE TABLE IF NOT EXISTS campaign_contacts (
 );
 CREATE INDEX IF NOT EXISTS idx_cc_campaign ON campaign_contacts(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_cc_due ON campaign_contacts(call_status, next_attempt_at);
+
+-- Small operator settings that must survive a restart (the scheduler switch, the plan override).
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL DEFAULT 'null',            -- JSON
+    updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL DEFAULT ''
+);
+
+-- Every script text the seeder or a reset replaced, so an auto-update can always be undone.
+CREATE TABLE IF NOT EXISTS agent_versions (
+    id                            INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id                      INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    prompt_template               TEXT NOT NULL,
+    trigger_template              TEXT NOT NULL DEFAULT '',
+    outbound_trigger_template     TEXT NOT NULL DEFAULT '',
+    known_caller_trigger_template TEXT NOT NULL DEFAULT '',
+    shipped_hash                  TEXT NOT NULL DEFAULT '',
+    reason                        TEXT NOT NULL,        -- auto_update | bootstrap_stale | reset
+    replaced_at                   TEXT NOT NULL,
+    replaced_by                   TEXT NOT NULL DEFAULT 'system'
+);
+CREATE INDEX IF NOT EXISTS idx_agent_versions_agent ON agent_versions(agent_id, id);
 """
+
+_SETTINGS_SQL = """CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT 'null', updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL DEFAULT '')"""
 
 
 def init() -> None:
@@ -253,15 +282,18 @@ def init() -> None:
             conn.execute("ALTER TABLE agents ADD COLUMN outbound_trigger_template TEXT NOT NULL DEFAULT ''")
         if have and "known_caller_trigger_template" not in have:
             conn.execute("ALTER TABLE agents ADD COLUMN known_caller_trigger_template TEXT NOT NULL DEFAULT ''")
+        # v3 -> v4: the seeder tracks which shipped script a row carries.
+        if have and "shipped_hash" not in have:
+            conn.execute("ALTER TABLE agents ADD COLUMN shipped_hash TEXT NOT NULL DEFAULT ''")
         conn.executescript(SCHEMA)
         conn.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
         conn.commit()
     _seed_departments()
     _seed_categories()
     _seed_agents()
-    # Seeding never overwrites an operator's prompt, so a redeploy can leave last month's
-    # script in the database while the code is new. Say so on every boot rather than waiting
-    # for a caller to hear the old behaviour.
+    # An operator's OWN edits are never overwritten (see _seed_agents), so a redeploy can leave
+    # an edited-but-old script in the database while the code is new. Say so on every boot
+    # rather than waiting for a caller to hear the old behaviour.
     warn_about_stale_agents()
 
 
@@ -378,38 +410,182 @@ def _seed_categories() -> None:
         conn.commit()
 
 
+# The script an agent row carries is these four texts. `shipped_hash` remembers which shipped
+# version was last written to the row, so the seeder can tell "untouched" (auto-update it)
+# from "an operator edited it" (leave it, warn if it is behind).
+SCRIPT_FIELDS = ("prompt_template", "trigger_template", "outbound_trigger_template",
+                 "known_caller_trigger_template")
+_EDITED_SENTINEL = "edited"     # a pre-v4 row that was customised: never auto-applied
+
+
+def script_hash(d) -> str:
+    import hashlib
+    raw = "\x1f".join(str((d or {}).get(k) or "") for k in SCRIPT_FIELDS)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _backup_agent(conn, row, reason, by="system") -> None:
+    conn.execute(
+        "INSERT INTO agent_versions (agent_id, prompt_template, trigger_template, outbound_trigger_template, "
+        "known_caller_trigger_template, shipped_hash, reason, replaced_at, replaced_by) VALUES (?,?,?,?,?,?,?,?,?)",
+        (row["id"], row.get("prompt_template") or "", row.get("trigger_template") or "",
+         row.get("outbound_trigger_template") or "", row.get("known_caller_trigger_template") or "",
+         row.get("shipped_hash") or "", reason, _now(), by or "system"))
+
+
+def _write_script(conn, agent_id, seed, ship) -> None:
+    conn.execute(
+        "UPDATE agents SET prompt_template = ?, trigger_template = ?, outbound_trigger_template = ?, "
+        "known_caller_trigger_template = ?, shipped_hash = ?, updated_at = ? WHERE id = ?",
+        (seed["prompt_template"], seed.get("trigger_template", ""), seed.get("outbound_trigger_template", ""),
+         seed.get("known_caller_trigger_template", ""), ship, _now(), int(agent_id)))
+
+
 def _seed_agents() -> None:
+    """Insert missing agents; bring an UNTOUCHED agent up to the shipped script; never overwrite
+    an operator's edits. Every replaced text is backed up in agent_versions first."""
     import epp_seeds
     conn = get_conn()
     now = _now()
     with _lock:
         for seed in epp_seeds.SEEDS:
-            if conn.execute("SELECT 1 FROM agents WHERE slug = ?", (seed["slug"],)).fetchone():
+            ship = script_hash(seed)
+            row = conn.execute("SELECT * FROM agents WHERE slug = ?", (seed["slug"],)).fetchone()
+            if row is None:
+                conn.execute(
+                    "INSERT INTO agents (name, slug, description, prompt_template, trigger_template, "
+                    "outbound_trigger_template, known_caller_trigger_template, voice_name, speech_language_code, "
+                    "shipped_hash, active, created_at, updated_at) VALUES (?,?,?,?,?,?,?,'','',?,1,?,?)",
+                    (seed["name"], seed["slug"], seed.get("description", ""),
+                     seed["prompt_template"], seed.get("trigger_template", ""),
+                     seed.get("outbound_trigger_template", ""), seed.get("known_caller_trigger_template", ""),
+                     ship, now, now))
                 continue
-            conn.execute(
-                "INSERT INTO agents (name, slug, description, prompt_template, trigger_template, "
-                "outbound_trigger_template, known_caller_trigger_template, voice_name, speech_language_code, "
-                "active, created_at, updated_at) VALUES (?,?,?,?,?,?,?,'','',1,?,?)",
-                (seed["name"], seed["slug"], seed.get("description", ""),
-                 seed["prompt_template"], seed.get("trigger_template", ""),
-                 seed.get("outbound_trigger_template", ""), seed.get("known_caller_trigger_template", ""),
-                 now, now))
+            row = dict(row)
+            stamped = row.get("shipped_hash") or ""
+            if stamped == ship:
+                continue                                    # already on this version
+            current = script_hash(row)
+            if stamped == "":
+                # A row from before v4. Equal to the shipped text → just stamp it. Behind the
+                # shipped text by its own fragment check → it was never edited on purpose
+                # (seeding never overwrote), so apply. Anything else was customised: freeze it.
+                if current == ship:
+                    conn.execute("UPDATE agents SET shipped_hash = ? WHERE id = ?", (ship, row["id"]))
+                elif stale_agent_reasons(row):
+                    _backup_agent(conn, row, "bootstrap_stale")
+                    _write_script(conn, row["id"], seed, ship)
+                    logger.info("Agent %s: shipped script applied (the row was behind it; previous text "
+                                "kept in agent_versions)", seed["slug"])
+                else:
+                    conn.execute("UPDATE agents SET shipped_hash = ? WHERE id = ?", (_EDITED_SENTINEL, row["id"]))
+                    logger.info("Agent %s: customised script kept as is (reset re-enables auto-updates)",
+                                seed["slug"])
+                continue
+            if current == stamped:
+                # Untouched since the last shipped version was applied → take the new one.
+                _backup_agent(conn, row, "auto_update")
+                _write_script(conn, row["id"], seed, ship)
+                logger.info("Agent %s: shipped script updated (previous text kept in agent_versions)",
+                            seed["slug"])
+            # else: edited by an operator — leave it; warn_about_stale_agents() says if it is behind.
         conn.commit()
 
 
-def refresh_seed_agent(slug: str) -> bool:
-    """Overwrite a seeded agent's prompt with the shipped text (operator-invoked reset)."""
+def refresh_seed_agent(slug: str, by: str = "") -> bool:
+    """Overwrite a seeded agent's script with the shipped text (operator-invoked reset). The
+    replaced text is backed up, and the row goes back to auto-updating on later deploys."""
     import epp_seeds
-    for seed in epp_seeds.SEEDS:
-        if seed["slug"] == slug:
-            n = _exec("UPDATE agents SET prompt_template = ?, trigger_template = ?, "
-                      "outbound_trigger_template = ?, known_caller_trigger_template = ?, updated_at = ? "
-                      "WHERE slug = ?",
-                      (seed["prompt_template"], seed.get("trigger_template", ""),
-                       seed.get("outbound_trigger_template", ""),
-                       seed.get("known_caller_trigger_template", ""), _now(), slug))
-            return bool(n is not None)
-    return False
+    seed = next((s for s in epp_seeds.SEEDS if s["slug"] == slug), None)
+    if not seed:
+        return False
+    conn = get_conn()
+    with _lock:
+        row = conn.execute("SELECT * FROM agents WHERE slug = ?", (slug,)).fetchone()
+        if row is None:
+            return False
+        _backup_agent(conn, dict(row), "reset", by=by or "operator")
+        _write_script(conn, row["id"], seed, script_hash(seed))
+        conn.commit()
+    return True
+
+
+def agent_script_state(row) -> str:
+    """'shipped' = the shipped text, untouched (auto-updates on deploy); 'edited' = an operator
+    changed it (kept as is; the STALE warning says if it is behind); 'frozen' = a customised
+    pre-v4 row (same treatment as edited)."""
+    if not row:
+        return ""
+    stamped = row.get("shipped_hash") or ""
+    if stamped == _EDITED_SENTINEL:
+        return "frozen"
+    if stamped and script_hash(row) == stamped:
+        return "shipped"
+    return "edited"
+
+
+def list_agent_versions(agent_id, limit: int = 20) -> list[dict]:
+    return _rows("SELECT id, agent_id, shipped_hash, reason, replaced_at, replaced_by, "
+                 "length(prompt_template) AS prompt_chars FROM agent_versions WHERE agent_id = ? "
+                 "ORDER BY id DESC LIMIT ?", (int(agent_id), int(limit)))
+
+
+def get_agent_version(version_id) -> dict | None:
+    return _one("SELECT * FROM agent_versions WHERE id = ?", (int(version_id),))
+
+
+# ---------------------------------------------------------------------------------------
+# Settings (key/value, JSON) — survive restarts, unlike module globals
+# ---------------------------------------------------------------------------------------
+_settings_ready_conn = None
+
+
+def _ensure_settings_table() -> None:
+    """The table exists after init(); this covers code paths (tests, tools) that never ran it."""
+    global _settings_ready_conn
+    conn = get_conn()
+    if _settings_ready_conn is conn:
+        return
+    with _lock:
+        conn.execute(_SETTINGS_SQL)
+        conn.commit()
+    _settings_ready_conn = conn
+
+
+def get_setting(key: str, default=None):
+    _ensure_settings_table()
+    r = _one("SELECT value FROM settings WHERE key = ?", (str(key),))
+    if not r:
+        return default
+    try:
+        return json.loads(r["value"])
+    except (TypeError, ValueError):
+        return default
+
+
+def set_setting(key: str, value, updated_by: str = "") -> None:
+    _ensure_settings_table()
+    _exec("INSERT INTO settings (key, value, updated_at, updated_by) VALUES (?,?,?,?) "
+          "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, "
+          "updated_by = excluded.updated_by",
+          (str(key), json.dumps(value, ensure_ascii=False, default=str), _now(), updated_by or ""))
+
+
+def delete_setting(key: str) -> None:
+    _ensure_settings_table()
+    _exec("DELETE FROM settings WHERE key = ?", (str(key),))
+
+
+def all_settings() -> dict:
+    _ensure_settings_table()
+    out = {}
+    for r in _rows("SELECT key, value, updated_at, updated_by FROM settings ORDER BY key"):
+        try:
+            val = json.loads(r["value"])
+        except (TypeError, ValueError):
+            val = None
+        out[r["key"]] = {"value": val, "updated_at": r["updated_at"], "updated_by": r["updated_by"]}
+    return out
 
 
 # ---------------------------------------------------------------------------------------
