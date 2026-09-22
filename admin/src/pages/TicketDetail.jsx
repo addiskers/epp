@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { api, audioUrl, fmtDate, fmtDur, STATUS_LABEL, LANG_NAME, cap } from '../api.js'
+import { api, audioUrl, fmtDate, fmtDur, STATUS_LABEL, STATUSES, LANG_NAME, cap } from '../api.js'
 import { useAuth } from '../auth.jsx'
 import PageHeader from '../components/PageHeader.jsx'
 import { PriorityPill, StatusPill, TypePill } from '../components/Pills.jsx'
@@ -196,14 +196,21 @@ function Field({ label, value }) {
 function StatusBox({ t, isAdmin, onChange }) {
   const [status, setStatus] = useState('')
   const [note, setNote] = useState('')
-  const options = (NEXT[t.status] || []).filter((s) => isAdmin || !((t.status === 'resolved' || t.status === 'closed') && s === 'open'))
+  // All five statuses are always listed (they are the fixed vocabulary the helpline reads out);
+  // the current one and any move not allowed from it are shown but disabled.
+  const reopen = (t.status === 'resolved' || t.status === 'closed')
+  const allowed = new Set((NEXT[t.status] || []).filter((s) => isAdmin || !(reopen && s === 'open')))
   return (
     <div className="panel">
       <div className="panel-head"><h3>Update status</h3></div>
       <div className="row">
         <select value={status} onChange={(e) => setStatus(e.target.value)}>
-          <option value="">Currently {STATUS_LABEL[t.status]} — change to…</option>
-          {options.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
+          <option value="">Change to…</option>
+          {STATUSES.map((s) => (
+            <option key={s} value={s} disabled={s === t.status || !allowed.has(s)}>
+              {STATUS_LABEL[s]}{s === t.status ? ' (current)' : !allowed.has(s) ? ' — not from here' : ''}
+            </option>
+          ))}
         </select>
       </div>
       <div className="row"><textarea rows={2} placeholder="Note for the timeline (optional)" value={note} onChange={(e) => setNote(e.target.value)} /></div>

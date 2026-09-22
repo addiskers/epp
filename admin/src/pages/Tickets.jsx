@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { api, downloadFile, fmtDate, qs, STATUS_LABEL, CALLER_TYPES, LANG_NAME, cap } from '../api.js'
 import { useAuth } from '../auth.jsx'
+import { refreshingStyle, useDebounced } from '../hooks.js'
 import PageHeader from '../components/PageHeader.jsx'
 import { IconDownload, IconSearch } from '../components/icons.jsx'
 import { PriorityPill, StatusPill, TypePill } from '../components/Pills.jsx'
@@ -33,7 +34,9 @@ export default function Tickets() {
 
   useEffect(() => { if (isAdmin) api.get('/departments').then((d) => setDepts(d.items || [])).catch(() => {}) }, [isAdmin])
 
-  const query = useMemo(() => qs({ ...f, limit: PAGE, offset: page * PAGE }), [params, page]) // eslint-disable-line react-hooks/exhaustive-deps
+  // The typed text updates the URL at once; the fetch waits for a pause in typing.
+  const dq = useDebounced(f.q, 300)
+  const query = useMemo(() => qs({ ...f, q: dq, limit: PAGE, offset: page * PAGE }), [params, dq, page]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     let cancel = false
@@ -94,7 +97,7 @@ export default function Tickets() {
 
       {err && <div className="err">{err}</div>}
 
-      <div className="table-wrap">
+      <div className="table-wrap" style={refreshingStyle(loading)}>
         <table>
           <thead>
             <tr>
@@ -111,7 +114,7 @@ export default function Tickets() {
             </tr>
           </thead>
           <tbody>
-            {loading ? <tr><td colSpan={10} className="empty">Loading…</td></tr>
+            {loading && !items.length ? <tr><td colSpan={10} className="empty">Loading…</td></tr>
               : !items.length ? <tr><td colSpan={10} className="empty">No tickets match.</td></tr>
               : items.map((t) => (
                 <tr key={t.ticket_id} className="clickable" title="Open this ticket"

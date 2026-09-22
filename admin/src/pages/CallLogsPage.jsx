@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, fmtDate, fmtDur, qs, LANG_NAME } from '../api.js'
+import { refreshingStyle, useDebounced } from '../hooks.js'
 import CallDrawer from '../components/CallDrawer.jsx'
 import PageHeader from '../components/PageHeader.jsx'
 import { IconSearch } from '../components/icons.jsx'
@@ -21,8 +22,9 @@ export default function CallLogsPage() {
   const [to, setTo] = useState('')
   const [page, setPage] = useState(0)
 
-  const filters = useMemo(() => ({ q, source, with_ticket: withTicket, from, to, limit: PAGE, offset: page * PAGE }),
-    [q, source, withTicket, from, to, page])
+  const dq = useDebounced(q, 300)
+  const filters = useMemo(() => ({ q: dq, source, with_ticket: withTicket, from, to, limit: PAGE, offset: page * PAGE }),
+    [dq, source, withTicket, from, to, page])
 
   useEffect(() => {
     let cancel = false
@@ -60,7 +62,7 @@ export default function CallLogsPage() {
       </div>
       {err && <div className="err">{err}</div>}
 
-      <div className="table-wrap">
+      <div className="table-wrap" style={refreshingStyle(loading)}>
         <table>
           <thead><tr>
             <th className="no-sort">Started</th><th className="no-sort">Source</th><th className="no-sort">Number</th>
@@ -68,7 +70,7 @@ export default function CallLogsPage() {
             <th className="no-sort">Ticket / outcome</th><th className="no-sort num">Cost</th>
           </tr></thead>
           <tbody>
-            {loading ? <tr><td colSpan={8} className="empty">Loading…</td></tr>
+            {loading && !items.length ? <tr><td colSpan={8} className="empty">Loading…</td></tr>
               : !items.length ? <tr><td colSpan={8} className="empty">No calls yet.</td></tr>
               : items.map((c) => (
                 <tr key={c.id} className="clickable" onClick={() => open(c)}>

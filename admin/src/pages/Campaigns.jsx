@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, qs, fmtDate, minToHHMM, CAMPAIGN_TYPE_LABEL } from '../api.js'
+import { refreshingStyle, useDebounced } from '../hooks.js'
 import PageHeader from '../components/PageHeader.jsx'
 import { IconSearch } from '../components/icons.jsx'
 
@@ -17,7 +18,8 @@ export default function Campaigns() {
   const [page, setPage] = useState(0)
   const [refreshKey, setRefreshKey] = useState(0)
 
-  const filters = useMemo(() => ({ q, status, limit: PAGE, offset: page * PAGE }), [q, status, page])
+  const dq = useDebounced(q, 300)
+  const filters = useMemo(() => ({ q: dq, status, limit: PAGE, offset: page * PAGE }), [dq, status, page])
   useEffect(() => {
     let cancel = false
     setLoading(true)
@@ -48,7 +50,7 @@ export default function Campaigns() {
           </select>
         </div>
         {err && <div className="err">{err}</div>}
-        <div className="table-wrap">
+        <div className="table-wrap" style={refreshingStyle(loading)}>
           <table>
             <thead><tr>
               <th className="no-sort">Campaign</th><th className="no-sort">Type</th><th className="no-sort">Status</th>
@@ -56,7 +58,7 @@ export default function Campaigns() {
               <th className="no-sort">Calling hours</th><th className="no-sort">Retries</th><th className="no-sort"></th>
             </tr></thead>
             <tbody>
-              {loading ? <tr><td colSpan={9} className="empty">Loading…</td></tr>
+              {loading && !items.length ? <tr><td colSpan={9} className="empty">Loading…</td></tr>
                 : !items.length ? <tr><td colSpan={9} className="empty">No campaigns yet.</td></tr>
                 : items.map((c) => {
                   const p = c.progress || {}

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, fmtDate, qs } from '../api.js'
+import { useDebounced } from '../hooks.js'
 import PageHeader from '../components/PageHeader.jsx'
 import { IconSearch } from '../components/icons.jsx'
 
@@ -17,7 +18,8 @@ export default function AuditLog() {
   const [page, setPage] = useState(0)
 
   useEffect(() => { api.get('/audit/actions').then((d) => setActions(d.items || [])).catch(() => {}) }, [])
-  const filters = useMemo(() => ({ q, action, from, to, limit: PAGE, offset: page * PAGE }), [q, action, from, to, page])
+  const dq = useDebounced(q, 300)
+  const filters = useMemo(() => ({ q: dq, action, from, to, limit: PAGE, offset: page * PAGE }), [dq, action, from, to, page])
   useEffect(() => {
     api.get(`/audit${qs(filters)}`).then((d) => { setItems(d.items || []); setTotal(d.total || 0) }).catch((e) => setErr(e.message))
   }, [filters])
