@@ -51,6 +51,7 @@ import campaigns
 import eo_api
 import eo_auth
 import eo_db
+import known_caller
 import languages
 import prompt_render
 import store
@@ -81,6 +82,9 @@ def tool_mapping(recorder: CallRecorder, outbound=False):
     mapping = {
         "create_ticket": lambda **kw: tickets.create_from_tool(kw, recorder.call_meta),
         "lookup_ticket": lambda **kw: tickets.lookup(kw.get("ticket_number")),
+        # may only touch tickets create_ticket returned on THIS call (the recorder keeps the list)
+        "update_ticket": lambda **kw: tickets.update_from_tool(
+            kw, recorder.call_meta, list((recorder.call or {}).get("ticket_ids") or [])),
         "end_call": handle_end_call,
     }
     if outbound:
@@ -128,7 +132,8 @@ def _resolve_call_context(caller="", agent_id=None):
 
     NEVER raises: on any failure it falls back to an identity-free prompt so the call still
     connects and the caller hears an apology instead of silence."""
-    ctx = {"agent": None, "system_instruction": None, "trigger": "", "tools": None, "missing": []}
+    ctx = {"agent": None, "system_instruction": None, "trigger": "", "tools": None, "missing": [],
+           "known_caller": None}
     try:
         st = _static_context()
         agent = eo_db.get_agent(agent_id) if agent_id else None
@@ -136,9 +141,17 @@ def _resolve_call_context(caller="", agent_id=None):
             logger.warning("Call context: agent %r not found; using the intake agent", agent_id)
         agent = agent or st["agent"]
         ctx["agent"] = agent
+        # A returning caller is greeted by name in their language and not re-interrogated.
+        profile = known_caller.lookup(caller) if caller else None
+        ctx["known_caller"] = profile
+        if profile:
+            logger.info("Known caller %s: %s (%s), %d open ticket(s), language=%s", caller,
+                        profile["name"], profile.get("caller_type") or "?", len(profile["open_tickets"]),
+                        profile.get("language") or "-")
         rendered = prompt_render.render_prompt(
             agent, caller_phone=caller, categories=st["categories"],
-            departments=st["departments"], langs=st["langs"])
+            departments=st["departments"], langs=st["langs"],
+            extra=known_caller.placeholders(profile), known=profile is not None)
         ctx["system_instruction"] = rendered["system_instruction"]
         ctx["trigger"] = rendered["trigger"]
         ctx["missing"] = rendered["missing"]

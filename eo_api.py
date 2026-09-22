@@ -972,6 +972,24 @@ async def campaign_contact_cancel(campaign_id: int, cc_id: int, request: Request
     return {"ok": True}
 
 
+@router.get("/campaigns/{campaign_id}/contacts/{cc_id}/call")
+async def campaign_contact_call(campaign_id: int, cc_id: int, request: Request):
+    """The most recent call record for one recipient — transcript, tool calls, tickets."""
+    admin = eo_auth.require_admin(request)
+    _campaign_or_404(campaign_id)
+    _cc_or_404(campaign_id, cc_id)
+    meta = await store.find_campaign_call(cc_id)
+    call = await store.load_call(meta["id"]) if meta else None
+    if not call:
+        raise HTTPException(status_code=404, detail="No answered call recorded for this recipient yet")
+    call = dict(call)
+    call.setdefault("messages", call.get("transcript") or [])
+    call["has_recording"] = store.has_recording(call.get("call_sid"))
+    call["tickets"] = [_decorate(t) for t in eo_db.tickets_by_call(call["id"])]
+    audit.log("transcript_viewed", user=admin, target=f"call:{call['id']}", request=request)
+    return JSONResponse(call)
+
+
 @router.patch("/campaigns/{campaign_id}/contacts/{cc_id}/remark")
 async def campaign_contact_remark(campaign_id: int, cc_id: int, request: Request):
     eo_auth.require_admin(request)

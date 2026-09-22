@@ -147,3 +147,21 @@ def test_campaign_types_lists_outcomes(client):
 def test_calls_can_be_filtered_by_campaign(client):
     h = _login(client, "admin", ADMIN_PASS)
     assert client.get("/api/epp/calls?campaign_id=1", headers=h).json()["total"] == 0
+
+
+def test_recipient_call_endpoint_returns_the_call_record(client, fresh_eo_db):
+    import asyncio
+    import store
+    h = _login(client, "admin", ADMIN_PASS)
+    cid = client.post("/api/epp/contacts", headers=h, json={"name": "A", "phone": "9000000001"}).json()["id"]
+    c = client.post("/api/epp/campaigns", headers=h, json={"name": "R", "campaign_type": "intake",
+                                                           "contact_ids": [cid], "start_at": FUTURE}).json()
+    cc = client.get(f"/api/epp/campaigns/{c['id']}/contacts", headers=h).json()["items"][0]
+    assert client.get(f"/api/epp/campaigns/{c['id']}/contacts/{cc['id']}/call", headers=h).status_code == 404
+    asyncio.run(store.save_call({"id": "rec1", "call_sid": "s1", "source": "plivo_campaign", "caller": "+919000000001",
+                                 "started_at": "2026-09-22T05:00:00+00:00", "status": "completed",
+                                 "campaign_id": c["id"], "campaign_contact_id": cc["id"],
+                                 "transcript": [{"role": "user", "text": "hi", "ts": "x"}], "tool_calls": []}))
+    r = client.get(f"/api/epp/campaigns/{c['id']}/contacts/{cc['id']}/call", headers=h)
+    assert r.status_code == 200 and r.json()["id"] == "rec1" and r.json()["messages"][0]["text"] == "hi"
+    assert client.get(f"/api/epp/campaigns/999/contacts/{cc['id']}/call", headers=h).status_code == 404

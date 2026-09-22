@@ -129,15 +129,21 @@ async def _reap_calling(campaign, now):
             if not rec.get("ended_at"):
                 continue                     # still on the call
             outcome = rec.get("outcome")
-            if not outcome:
-                # No record_outcome: a created ticket is the answer; otherwise the person
-                # answered and the agent never recorded how it ended.
-                outcome = "ticket_created" if rec.get("ticket_id") else "answered"
+            if rec.get("ticket_id"):
+                # A ticket registered on the call is the truth, even if the agent also recorded
+                # "no_concern" (seen live: it did both). Never let bookkeeping hide a ticket.
+                outcome = "ticket_created"
+            elif not outcome:
+                # No record_outcome and no ticket: the person answered and the agent never
+                # recorded how it ended.
+                outcome = "answered"
             if outcome in _UNANSWERED_OUTCOMES:
                 eo_db.cc_update(cc["id"], outcome=outcome, last_call_id=rec.get("id"))
                 _apply_failure(cc, campaign, now, error=outcome)
             else:
                 fields = dict(call_status="done", outcome=outcome, last_call_id=rec.get("id"))
+                if rec.get("ticket_id") and not cc.get("ticket_id"):
+                    fields["ticket_id"] = rec["ticket_id"]      # link the row to what the call produced
                 note = (rec.get("outcome_note") or "").strip()
                 if note and not (cc.get("remark") or "").strip():
                     fields["remark"] = note          # never over a human edit

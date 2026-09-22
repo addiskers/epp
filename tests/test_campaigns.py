@@ -99,7 +99,7 @@ def test_call_context_per_type(db):
     assert ctx["agent"]["slug"] == "epp_announcement"
     assert "Plant closed on Monday." in ctx["system_instruction"]
     assert "calling from" in ctx["trigger"] and ctx["missing"] == []
-    assert [t["name"] for t in ctx["tools"]] == ["create_ticket", "lookup_ticket", "record_outcome", "end_call"]
+    assert [t["name"] for t in ctx["tools"]] == ["create_ticket", "lookup_ticket", "update_ticket", "record_outcome", "end_call"]
     assert ctx["campaign"]["id"] == ann["id"] and ctx["cc"]["id"] == cc["id"]
 
     t = _ticket(phone="9000000001", language="hi")

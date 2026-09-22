@@ -41,12 +41,14 @@ export default function CampaignDetail() {
   async function openCall(cc) {
     setNote('')
     try {
-      const list = await api.get(`/calls${qs({ campaign_id: id, q: cc.phone, limit: 1 })}`)
-      const item = (list.items || [])[0]
-      if (!item) { setNote(`${cc.name || cc.phone}: attempted ${cc.attempts || 0} time(s) — no answered call to open yet.`); return }
-      setDetail({ ...item, _loading: true })
-      setDetail(await api.get(`/calls/${encodeURIComponent(item.id)}`))
-    } catch (e) { setNote(e.message) }
+      setDetail({ caller: cc.phone, _loading: true })
+      setDetail(await api.get(`/campaigns/${id}/contacts/${cc.id}/call`))
+    } catch (e) {
+      setDetail(null)
+      setNote(e.status === 404
+        ? `${cc.name || cc.phone}: attempted ${cc.attempts || 0} time(s) — no answered call recorded yet.`
+        : e.message)
+    }
   }
 
   if (err && !c) return <div className="stack"><div className="err">{err}</div></div>
@@ -96,7 +98,7 @@ export default function CampaignDetail() {
           <table>
             <thead><tr>
               <th className="no-sort">Name</th><th className="no-sort">Phone</th>
-              {c.campaign_type === 'followup' && <th className="no-sort">Ticket</th>}
+              <th className="no-sort">Ticket</th>
               <th className="no-sort">Last attempt</th><th className="no-sort">Next due</th><th className="no-sort num">Attempts</th>
               <th className="no-sort">Status</th><th className="no-sort">Remark</th><th className="no-sort">Action</th>
             </tr></thead>
@@ -109,8 +111,8 @@ export default function CampaignDetail() {
                         title={clickable ? "View this recipient's call" : ''}>
                       <td>{cc.name || <span className="muted">—</span>}</td>
                       <td style={{ fontFamily: 'var(--mono)' }}>{cc.phone}</td>
-                      {c.campaign_type === 'followup' && <td onClick={(e) => e.stopPropagation()}>
-                        {cc.ticket_id ? <Link to={`/tickets/${cc.ticket_id}`} style={{ fontFamily: 'var(--mono)', color: 'var(--green-2)' }}>{cc.ticket_id}</Link> : '—'}</td>}
+                      <td onClick={(e) => e.stopPropagation()}>
+                        {cc.ticket_id ? <Link to={`/tickets/${cc.ticket_id}`} style={{ fontFamily: 'var(--mono)', color: 'var(--green-2)' }}>{cc.ticket_id}</Link> : <span className="muted">—</span>}</td>
                       <td>{cc.last_attempt_at ? fmtDate(cc.last_attempt_at) : <span className="muted">—</span>}</td>
                       <td>{cc.call_status === 'pending' ? (cc.next_attempt_at ? fmtDate(cc.next_attempt_at) : <span className="muted">Queued</span>) : <span className="muted">—</span>}</td>
                       <td className="num">{cc.attempts}</td>
@@ -118,9 +120,11 @@ export default function CampaignDetail() {
                       <td onClick={(e) => e.stopPropagation()}>
                         <RemarkCell value={cc.remark} onSave={(v) => api.patch(`/campaigns/${id}/contacts/${cc.id}/remark`, { remark: v })} /></td>
                       <td onClick={(e) => e.stopPropagation()} style={{ display: 'flex', gap: 6 }}>
+                        {clickable && <button className="btn ghost sm" onClick={() => openCall(cc)}>View call</button>}
                         {['pending', 'failed', 'cancelled'].includes(cc.call_status)
-                          ? <button className="btn sm" onClick={() => callNow(cc)}>Call now</button> : <span className="muted">—</span>}
+                          && <button className="btn sm" onClick={() => callNow(cc)}>Call now</button>}
                         {cc.call_status === 'pending' && <button className="btn ghost sm" onClick={() => cancelRetry(cc)}>Cancel</button>}
+                        {!clickable && !['pending', 'failed', 'cancelled'].includes(cc.call_status) && <span className="muted">—</span>}
                       </td>
                     </tr>
                   )

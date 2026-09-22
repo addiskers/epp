@@ -180,7 +180,7 @@ def test_agent_editor_rejects_unknown_placeholders_and_dead_tools(client, fresh_
     assert r.status_code == 200 and r.json()["prompt_template"] == "Hi {helpline_name}"
     p = client.post(f"/api/epp/agents/{agent['id']}/preview", headers=admin_h, json={}).json()
     assert p["system_instruction"].startswith("Hi EPP Composites") and p["missing"] == []
-    assert [t["name"] for t in p["tools"]] == ["create_ticket", "lookup_ticket", "end_call"]
+    assert [t["name"] for t in p["tools"]] == ["create_ticket", "lookup_ticket", "update_ticket", "end_call"]
     r = client.post(f"/api/epp/agents/{agent['id']}/reset", headers=admin_h)
     assert r.status_code == 200 and "Welcome to {helpline_name}" in r.json()["prompt_template"]
     tok = client.post(f"/api/epp/agents/{agent['id']}/test-token", headers=admin_h).json()["token"]

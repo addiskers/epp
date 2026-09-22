@@ -91,7 +91,7 @@ class HallucinationGuard:
         spoken number legitimate for the rest of the call."""
         if not isinstance(result, dict):
             return
-        if name == "create_ticket" and result.get("ok"):
+        if name in ("create_ticket", "update_ticket") and result.get("ok"):
             self.ticket_ok = True
         elif name == "lookup_ticket" and result.get("found"):
             self.ticket_ok = True

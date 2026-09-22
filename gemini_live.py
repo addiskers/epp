@@ -108,22 +108,19 @@ class GeminiLive:
         # Per-agent voice wins; EO_VOICE_NAME is the server-wide fallback so voices can be A/B'd
         # without a code deploy. Warm female default.
         voice_name = self.voice_name or (os.getenv("EO_VOICE_NAME", "Aoede") or "Aoede").strip() or "Aoede"
-        # Voice language bias. en-IN = Indian-English accent; the native-audio model still understands and can
-        # speak Hindi/Gujarati (see the agent's LANGUAGE prompt section). Fixed for the whole session — cannot
-        # switch mid-call, which is why it lives on the agent row rather than being decided per turn.
+        # Voice language bias. BLANK (the default) lets the native-audio model auto-detect and follow
+        # the caller — what a twelve-language helpline needs. A code such as en-IN pins the accent
+        # for the whole session and biases recognition and output toward that language; it lives on
+        # the agent row (Accent field) or EO_SPEECH_LANGUAGE_CODE for deliberate A/B tests only.
         language_code = (self.speech_language_code
-                         or (os.getenv("EO_SPEECH_LANGUAGE_CODE", "en-IN") or "en-IN").strip()
-                         or "en-IN")
+                         or (os.getenv("EO_SPEECH_LANGUAGE_CODE") or "").strip())
+        speech_kwargs = {"voice_config": types.VoiceConfig(
+            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name))}
+        if language_code:
+            speech_kwargs["language_code"] = language_code
         config = types.LiveConnectConfig(
             response_modalities=[types.Modality.AUDIO],
-            speech_config=types.SpeechConfig(
-                language_code=language_code,
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name=voice_name
-                    )
-                )
-            ),
+            speech_config=types.SpeechConfig(**speech_kwargs),
             system_instruction=types.Content(parts=[types.Part(text=self.system_instruction)]),
             input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
@@ -147,7 +144,7 @@ class GeminiLive:
             config.enable_affective_dialog = True
         elif affective:
             logger.warning("EO_AFFECTIVE_DIALOG=true but this google-genai has no enable_affective_dialog; ignored")
-        logger.info(f"Voice={voice_name} language={language_code} "
+        logger.info(f"Voice={voice_name} language={language_code or 'auto-detect'} "
                     f"prompt_chars={len(self.system_instruction)} "
                     f"affective={'on' if getattr(config, 'enable_affective_dialog', None) else 'off'}; "
                     f"VAD config: prefix={vad_prefix_ms}ms "

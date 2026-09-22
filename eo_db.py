@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS agents (
     prompt_template      TEXT NOT NULL,
     trigger_template     TEXT NOT NULL DEFAULT '',      -- first-turn trigger on an INBOUND call
     outbound_trigger_template TEXT NOT NULL DEFAULT '', -- first-turn trigger on a campaign dial
+    known_caller_trigger_template TEXT NOT NULL DEFAULT '', -- first-turn trigger when the number is recognised
     voice_name           TEXT NOT NULL DEFAULT '',
     speech_language_code TEXT NOT NULL DEFAULT '',
     active               INTEGER NOT NULL DEFAULT 1,
@@ -250,6 +251,8 @@ def init() -> None:
         have = {r["name"] for r in conn.execute("PRAGMA table_info(agents)").fetchall()}
         if have and "outbound_trigger_template" not in have:
             conn.execute("ALTER TABLE agents ADD COLUMN outbound_trigger_template TEXT NOT NULL DEFAULT ''")
+        if have and "known_caller_trigger_template" not in have:
+            conn.execute("ALTER TABLE agents ADD COLUMN known_caller_trigger_template TEXT NOT NULL DEFAULT ''")
         conn.executescript(SCHEMA)
         conn.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
         conn.commit()
@@ -270,6 +273,9 @@ _REQUIRED_FRAGMENTS = {
         ("## CORRECTIONS", "ignores name corrections and loops the same question"),
         ("ONE question per turn", "bundles two questions into one breath"),
         ("never Hindi", "may answer a Gujarati or Marathi caller in Hindi"),
+        ("update_ticket", "cannot correct a ticket it has already registered"),
+        ("fluently", "may claim it only speaks Hindi or English"),
+        ("{known_caller_block}", "does not recognise returning callers"),
     ),
     "epp_followup": (("## THE FLOW", "missing the follow-up flow"),),
     "epp_announcement": (("## THE MESSAGE", "missing the message section"),),
@@ -379,11 +385,12 @@ def _seed_agents() -> None:
                 continue
             conn.execute(
                 "INSERT INTO agents (name, slug, description, prompt_template, trigger_template, "
-                "outbound_trigger_template, voice_name, speech_language_code, active, created_at, updated_at) "
-                "VALUES (?,?,?,?,?,?,'','',1,?,?)",
+                "outbound_trigger_template, known_caller_trigger_template, voice_name, speech_language_code, "
+                "active, created_at, updated_at) VALUES (?,?,?,?,?,?,?,'','',1,?,?)",
                 (seed["name"], seed["slug"], seed.get("description", ""),
                  seed["prompt_template"], seed.get("trigger_template", ""),
-                 seed.get("outbound_trigger_template", ""), now, now))
+                 seed.get("outbound_trigger_template", ""), seed.get("known_caller_trigger_template", ""),
+                 now, now))
         conn.commit()
 
 
@@ -393,9 +400,11 @@ def refresh_seed_agent(slug: str) -> bool:
     for seed in epp_seeds.SEEDS:
         if seed["slug"] == slug:
             n = _exec("UPDATE agents SET prompt_template = ?, trigger_template = ?, "
-                      "outbound_trigger_template = ?, updated_at = ? WHERE slug = ?",
+                      "outbound_trigger_template = ?, known_caller_trigger_template = ?, updated_at = ? "
+                      "WHERE slug = ?",
                       (seed["prompt_template"], seed.get("trigger_template", ""),
-                       seed.get("outbound_trigger_template", ""), _now(), slug))
+                       seed.get("outbound_trigger_template", ""),
+                       seed.get("known_caller_trigger_template", ""), _now(), slug))
             return bool(n is not None)
     return False
 
@@ -557,7 +566,8 @@ def delete_category(category_id: int) -> int:
 # Agents
 # ---------------------------------------------------------------------------------------
 AGENT_FIELDS = ("name", "slug", "description", "prompt_template", "trigger_template",
-                "outbound_trigger_template", "voice_name", "speech_language_code", "active")
+                "outbound_trigger_template", "known_caller_trigger_template", "voice_name",
+                "speech_language_code", "active")
 
 
 def get_agent(agent_id) -> dict | None:
@@ -675,6 +685,15 @@ def ticket_by_call(call_id: str) -> dict | None:
     if not call_id:
         return None
     return _one(_TICKET_SELECT + "WHERE t.call_id = ? ORDER BY t.created_at DESC LIMIT 1", (str(call_id),))
+
+
+def tickets_by_phone(phone: str, limit: int = 5) -> list[dict]:
+    """Tickets registered from one contact number (exact E.164), newest first — the
+    known-caller lookup on an inbound call."""
+    if not phone:
+        return []
+    return _rows(_TICKET_SELECT + "WHERE t.contact_number = ? ORDER BY t.created_at DESC LIMIT ?",
+                 (str(phone), int(limit)))
 
 
 def tickets_by_call(call_id: str) -> list[dict]:

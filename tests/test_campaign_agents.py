@@ -74,10 +74,10 @@ def test_inbound_render_ignores_the_outbound_trigger():
 
 
 def test_tools_per_campaign_type():
-    assert [t["name"] for t in agent_tools.build_tools()] == ["create_ticket", "lookup_ticket", "end_call"]
+    assert [t["name"] for t in agent_tools.build_tools()] == ["create_ticket", "lookup_ticket", "update_ticket", "end_call"]
     out = agent_tools.build_tools(campaign_type="followup")
-    assert [t["name"] for t in out] == ["create_ticket", "lookup_ticket", "record_outcome", "end_call"]
-    enum = out[2]["parameters"]["properties"]["outcome_status"]["enum"]
+    assert [t["name"] for t in out] == ["create_ticket", "lookup_ticket", "update_ticket", "record_outcome", "end_call"]
+    enum = out[3]["parameters"]["properties"]["outcome_status"]["enum"]
     assert enum == ["confirmed", "has_update", "callback", "not_reachable", "wrong_number"]
     assert agent_tools.record_outcome_declaration("intake")["parameters"]["properties"]["outcome_status"]["enum"][0] == "no_concern"
     assert agent_tools.record_outcome_declaration("announcement")["parameters"]["properties"]["outcome_status"]["enum"][0] == "acknowledged"

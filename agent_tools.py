@@ -50,6 +50,34 @@ LOOKUP_TICKET_DECLARATION = {
 }
 
 
+UPDATE_TICKET_DECLARATION = {
+    "name": "update_ticket",
+    "description": (
+        "Correct or add to a ticket YOU registered on THIS call — a misheard name, a wrong number, "
+        "a detail the caller gives after the reference number was read out. Pass the reference number "
+        "and ONLY the fields that change. Never use it to create a ticket, and never for a ticket from "
+        "another call."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "ticket_id": {"type": "string", "description": "The reference number of the ticket registered on this call."},
+            "caller_name": {"type": "string", "description": "Corrected full name. Empty if unchanged."},
+            "contact_number": {"type": "string", "description": "Corrected contact number. Empty if unchanged."},
+            "company_name": {"type": "string", "description": "Corrected company (customer). Empty if unchanged."},
+            "vendor_code": {"type": "string", "description": "Corrected vendor code. Empty if unchanged."},
+            "employee_id": {"type": "string", "description": "Corrected employee ID. Empty if unchanged."},
+            "caller_department": {"type": "string", "description": "Corrected department (employee). Empty if unchanged."},
+            "plant_location": {"type": "string", "description": "Corrected plant / location. Empty if unchanged."},
+            "additional_details": {"type": "string",
+                                   "description": "Anything the caller ADDED to the concern after registration, "
+                                                  "in English. Empty if nothing."},
+        },
+        "required": ["ticket_id"],
+    },
+}
+
+
 def _category_names(categories):
     """Unique category names across every caller type (a JSON-schema enum cannot depend on
     another property). Order: as configured."""
@@ -164,7 +192,7 @@ def build_tools(categories=None, langs=None, campaign_type=None):
     except Exception:
         logger.exception("create_ticket declaration failed; using a category-free fallback")
         create = create_ticket_declaration([], None)
-    tools = [create, LOOKUP_TICKET_DECLARATION]
+    tools = [create, LOOKUP_TICKET_DECLARATION, UPDATE_TICKET_DECLARATION]
     if campaign_type:
         tools.append(record_outcome_declaration(campaign_type))
     tools.append(END_CALL_DECLARATION)

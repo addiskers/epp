@@ -228,10 +228,13 @@ Re-run `npm run build` after any SPA change — FastAPI serves the built `admin/
 
 ## Language verification checklist
 
-Gemini Live fixes the speech language code per session (`en-IN`); the script drives the
-switch to the caller's language. Hindi and Gujarati are proven on this stack. The rest must be
-verified on a real phone call before they are promised to callers. Record the result here and
-remove any failure from `EPP_ENABLED_LANGUAGES`.
+**Before the checklist:** the Accent field on the Agent page must be **blank**, and
+`EO_SPEECH_LANGUAGE_CODE` blank in `.env`. The boot log then shows `language=auto-detect`.
+Pinning `en-IN` biased the model toward Hindi/English (a Gujarati caller was answered in
+Hindi on the first test round). The script drives the switch to the caller's language. Hindi
+and English are proven on this stack. The rest must be verified on a real phone call before
+they are promised to callers. Record the result here and remove any failure from
+`EPP_ENABLED_LANGUAGES`.
 
 | Language | Understood the caller | Spoke back naturally | Read the ticket number correctly | Verified by / date |
 |---|---|---|---|---|

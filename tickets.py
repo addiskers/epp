@@ -173,6 +173,10 @@ def create_from_tool(args: dict, call_meta: dict | None = None) -> dict:
         if len(description) < 5:
             return {"ok": False, "error": "description is empty",
                     "instruction": "You have not captured the concern yet. Ask the caller to explain it, then call create_ticket again."}
+        if not _s(args.get("caller_name"), 120):
+            return {"ok": False, "error": "caller_name is empty",
+                    "instruction": "You do not have the caller's name. Ask for it once more, politely. If they "
+                                   "decline, call create_ticket again with caller_name set to 'Not given'."}
 
         categories = eo_db.list_categories(active_only=True)
         cat = routing.resolve_category(caller_type, args.get("category"), categories)
@@ -235,6 +239,65 @@ def create_from_tool(args: dict, call_meta: dict | None = None) -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {e}",
                 "instruction": "The ticket could not be registered because of a technical problem. Apologise, "
                                "ask the caller to call again in a few minutes, and do NOT invent a number."}
+
+
+_UPDATABLE = ("caller_name", "contact_number", "company_name", "vendor_code", "employee_id",
+              "caller_department", "plant_location")
+
+
+def update_from_tool(args: dict, call_meta: dict | None, created_ids) -> dict:
+    """update_ticket tool handler: correct or extend a ticket registered on THIS call.
+
+    `created_ids` are the ticket ids the recorder saw create_ticket return on this call — the
+    only tickets the agent may touch. Never raises."""
+    args = args or {}
+    created_ids = set(created_ids or [])
+    try:
+        tid = normalize_ticket_number(args.get("ticket_id"))
+        if not tid or tid not in created_ids:
+            return {"ok": False, "error": "not a ticket from this call",
+                    "instruction": "You can only correct a ticket you registered on this call. If the caller "
+                                   "wants to change an older ticket, note it as a new concern instead."}
+        ticket = eo_db.get_ticket(tid)
+        if not ticket:
+            return {"ok": False, "error": "ticket not found",
+                    "instruction": "That ticket could not be found. Continue without changing it."}
+        fields, changed, summary = {}, [], []
+        for key in _UPDATABLE:
+            val = _s(args.get(key), 200)
+            if not val:
+                continue
+            if key == "contact_number":
+                val = _clean_phone(val)
+            if val == (ticket.get(key) or ""):
+                continue
+            fields[key] = val
+            changed.append(key)
+            summary.append(f"{key} is now {val}")
+            eo_db.add_ticket_event(tid, "corrected", actor_type="ai", actor_name="Helpline agent",
+                                   from_value=ticket.get(key) or "", to_value=val,
+                                   note=f"{key.replace('_', ' ')} corrected on the call")
+        addition = _s(args.get("additional_details"), 2000)
+        if addition:
+            fields["description"] = (ticket.get("description") or "").rstrip() + "\n\nAdded later on the call: " + addition
+            changed.append("additional_details")
+            summary.append("the concern now includes the additional details")
+            eo_db.add_ticket_event(tid, "note", actor_type="ai", actor_name="Helpline agent",
+                                   note="Added on the call: " + addition)
+        if not changed:
+            return {"ok": False, "error": "nothing to change",
+                    "instruction": "Nothing was changed — the values you passed are blank or already on the "
+                                   "ticket. Continue the call."}
+        eo_db.update_ticket(tid, **fields)
+        logger.info("TICKET %s updated on call %s: %s", tid, (call_meta or {}).get("call_id"), ", ".join(changed))
+        return {"ok": True, "ticket_id": tid, "changed": changed,
+                "instruction": "SYSTEM NOTE — updated: " + "; ".join(summary) + ". Confirm ONCE in one short "
+                               "sentence in the caller's language, then continue. Do not read the reference "
+                               "number again unless they ask."}
+    except Exception as e:
+        logger.exception("update_ticket failed")
+        return {"ok": False, "error": f"{type(e).__name__}: {e}",
+                "instruction": "The correction could not be saved. Apologise briefly and continue."}
 
 
 def lookup(ticket_number) -> dict:

@@ -67,6 +67,17 @@ KNOWN_PLACEHOLDERS = frozenset({
     # follow-up calls: the ticket being followed up
     "ticket_id", "ticket_id_spoken", "ticket_status", "ticket_category", "ticket_department",
     "ticket_created_spoken",
+    # a returning caller recognised from their number (see known_caller)
+    "known_caller_name", "known_caller_first_name", "known_caller_type", "known_caller_language",
+    "known_caller_block",
+})
+
+# Placeholders that are legitimately blank on most calls (an unknown caller has no known-caller
+# block). They still blank out and tidy like any other, but are never reported as "missing" —
+# otherwise every ordinary call would log an unresolved-placeholder warning.
+OPTIONAL_PLACEHOLDERS = frozenset({
+    "known_caller_name", "known_caller_first_name", "known_caller_type", "known_caller_language",
+    "known_caller_block",
 })
 
 
@@ -267,7 +278,8 @@ def render(template, ctx, *, strict=False):
             return ""
         value = ctx.get(name, "")
         if value in (None, ""):
-            missing.add(name)
+            if name not in OPTIONAL_PLACEHOLDERS:
+                missing.add(name)
             blanked_offsets.append(match.start())
             return ""
         return str(value)
@@ -295,11 +307,12 @@ DEFAULT_TRIGGER = (
 
 
 def render_prompt(agent, *, caller_phone=None, categories=None, departments=None, langs=None,
-                  now=None, extra=None, outbound=False):
+                  now=None, extra=None, outbound=False, known=False):
     """The one function the call path uses. Never raises.
 
     outbound=True (a campaign dial) uses the agent's outbound trigger when it has one — the
-    person did not ring us, so the opening must say who is calling and why."""
+    person did not ring us, so the opening must say who is calling and why. known=True (the
+    number matched a previous caller) uses the known-caller trigger: greet by name, confirm."""
     agent = agent or {}
     ctx = build_context(caller_phone=caller_phone, categories=categories,
                         departments=departments, langs=langs, now=now, extra=extra)
@@ -307,6 +320,8 @@ def render_prompt(agent, *, caller_phone=None, categories=None, departments=None
     trigger_template = agent.get("trigger_template") or ""
     if outbound and (agent.get("outbound_trigger_template") or "").strip():
         trigger_template = agent["outbound_trigger_template"]
+    elif known and (agent.get("known_caller_trigger_template") or "").strip():
+        trigger_template = agent["known_caller_trigger_template"]
     trigger, missing_trigger = render(trigger_template, ctx)
     if not trigger:
         trigger = DEFAULT_TRIGGER

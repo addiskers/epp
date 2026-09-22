@@ -27,7 +27,7 @@ def _check(client, xml, uuid):
     assert "Welcome to EPP Composites" in meta["ctx"]["system_instruction"]
     # the intake agent's own opening trigger, not prompt_render.DEFAULT_TRIGGER
     assert "THE OPENING" in meta["ctx"]["trigger"] and "Say your opening line now" not in meta["ctx"]["trigger"]
-    assert [t["name"] for t in meta["ctx"]["tools"]] == ["create_ticket", "lookup_ticket", "end_call"]
+    assert [t["name"] for t in meta["ctx"]["tools"]] == ["create_ticket", "lookup_ticket", "update_ticket", "end_call"]
 
 
 def test_post_form_body_the_plivo_console_default(client):
