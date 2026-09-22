@@ -67,3 +67,38 @@ def test_nudge_text_tells_the_agent_what_to_do():
     g = hg.HallucinationGuard()
     n = g.check("your reference number is TKT 2026 000009")
     assert "create_ticket" in n and "invented" in n and n.startswith("[")
+
+
+@pytest.mark.parametrize("text", [
+    # a STATUS INQUIRY: the agent repeats the caller's number back to confirm it — not an announcement
+    "Your reference number is EPP 2026 000012, is that right?",
+    "Just to confirm, E P P two zero two six zero zero zero zero one two — have I got that right?",
+    "Aapka reference number EPP 2026 000012 hai, sahi hai?",
+    "So the ticket number is TKT-2026-000004. Correct?",
+])
+def test_reading_a_callers_number_back_is_not_flagged(text, monkeypatch):
+    monkeypatch.setenv("EPP_TICKET_PREFIX", "EPP")
+    assert hg.spoke_a_reference(text) is False
+
+
+def test_an_announcement_followed_by_a_question_is_still_flagged(monkeypatch):
+    monkeypatch.setenv("EPP_TICKET_PREFIX", "EPP")
+    assert hg.spoke_a_reference(
+        "Your concern has been registered. Your reference number is EPP 2026 000123. "
+        "Would you like to note it down?") is True
+
+
+def test_status_inquiry_flow_never_nudges(monkeypatch):
+    """Ask for the number, read it back, look it up, report the status: zero nudges."""
+    monkeypatch.setenv("EPP_TICKET_PREFIX", "EPP")
+    g = hg.HallucinationGuard()
+    assert g.check("Do you have your reference number?") is None
+    assert g.check("Your reference number is EPP 2026 000012, is that right?") is None
+    g.on_tool_call("lookup_ticket", {"found": True, "ticket_id": "EPP-2026-000012", "status": "open"})
+    assert g.check("Ticket EPP 2026 000012 is currently Open, with the Finance department.") is None
+    assert g.nudged == 0
+
+
+def test_nudge_mentions_lookup_for_a_status_inquiry():
+    n = hg.HallucinationGuard().check("Your reference number is EPP 2026 000123.")
+    assert "lookup_ticket" in n

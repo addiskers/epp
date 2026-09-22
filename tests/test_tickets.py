@@ -321,3 +321,16 @@ def test_post_call_skips_short_calls_and_disabled_analysis(db, monkeypatch):
         return a, b
     assert asyncio.run(run()) == (None, None)
     assert called == []
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("zero zero zero zero twelve", "EPP-2026-000012"),
+    ("E P P two thousand twenty six zero zero zero zero one two", "EPP-2026-000012"),
+    ("EPP twenty twenty six, double zero, double zero, one two", "EPP-2026-000012"),
+    ("triple zero zero one two", "EPP-2026-000012"),
+    ("epp two zero two six one hundred and twenty three", "EPP-2026-000123"),
+    ("EPP 2026 000012", "EPP-2026-000012"),
+    ("ई पी पी दो शून्य दो छह शून्य शून्य शून्य शून्य एक दो", "EPP-2026-000012"),
+])
+def test_normalise_spoken_number_words(raw, expected):
+    assert tickets.normalize_ticket_number(raw, now=NOW) == expected

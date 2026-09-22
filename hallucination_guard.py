@@ -36,6 +36,23 @@ _ASKING_RE = re.compile(
     re.I,
 )
 
+# The agent READING A NUMBER BACK to confirm it heard the caller right ("…000012, is that
+# right?") is a question, not an announcement. This was firing the nudge in the middle of every
+# status inquiry and derailing the lookup.
+_CONFIRM_RE = re.compile(
+    r"(is that (right|correct)|is this (right|correct)|have i got (that|it) right|did i get (that|it) right"
+    r"|correct\??$|right\??$|sahi hai|theek hai|thik hai|barabar|sahi che|barobar|ठीक है|सही है|બરાબર|સાચું)",
+    re.I,
+)
+
+# Sentence boundaries: Latin punctuation plus the Devanagari danda.
+_SENT_SPLIT_RE = re.compile(r"(?<=[.!?।])\s+")
+
+
+def _is_question(sentence: str) -> bool:
+    s = sentence.strip()
+    return s.endswith("?") or bool(_CONFIRM_RE.search(s)) or bool(_ASKING_RE.search(s))
+
 
 def _prefix_re():
     """The ticket prefix spoken letter by letter or as a word, followed by a digit or a spoken
@@ -50,28 +67,37 @@ def _prefix_re():
 
 
 def spoke_a_reference(text: str) -> bool:
-    """True when this agent turn announces a reference number or a completed registration."""
+    """True when this agent turn ANNOUNCES a reference number or a completed registration.
+
+    Judged sentence by sentence: a statement carrying the prefix + digits, or 'registered',
+    counts; a question — asking for the number, or reading it back for confirmation — never
+    does, even when it contains the number."""
     t = (text or "").strip()
     if not t:
         return False
-    has_evidence = bool(_prefix_re().search(t))
-    announced = bool(_ANNOUNCE_RE.search(t))
-    if not announced and not has_evidence:
-        return False
-    if has_evidence:
-        return True
-    # Announced the words without a number: only a statement counts, never a question for one.
-    if _ASKING_RE.search(t) or t.endswith("?"):
-        return False
-    return True
+    prefix_re = _prefix_re()
+    sents = [s.strip() for s in _SENT_SPLIT_RE.split(t) if s.strip()]
+    questions = [_is_question(s) for s in sents]
+    # "…the ticket number is TKT-2026-000004. Correct?" — a short confirmation tail makes the
+    # sentence before it a read-back, not an announcement.
+    for i in range(1, len(sents)):
+        if questions[i] and len(sents[i].split()) <= 4:
+            questions[i - 1] = True
+    for s, is_q in zip(sents, questions):
+        if is_q:
+            continue
+        if prefix_re.search(s) or _ANNOUNCE_RE.search(s):
+            return True
+    return False
 
 
 NUDGE = (
-    "[STOP. You have NOT called create_ticket on this call — no ticket exists, and any reference "
-    "number you said is invented. Say to the caller, in their language: \"One moment, let me "
-    "register that properly.\" Then call create_ticket NOW with everything you collected, wait for "
-    "its result, and read ONLY the say_now it returns. Do not apologise at length; do not repeat the "
-    "old number.]"
+    "[STOP. No ticket exists on this call — you have called neither create_ticket nor lookup_ticket, "
+    "so any reference number you said is invented. If the caller GAVE you a number to check, call "
+    "lookup_ticket with it now and say only what it returns. If you were registering a concern, say "
+    "to the caller, in their language: \"One moment, let me register that properly.\" Then call "
+    "create_ticket NOW with everything you collected, wait for its result, and read ONLY the say_now "
+    "it returns. Do not apologise at length; do not repeat the old number.]"
 )
 
 

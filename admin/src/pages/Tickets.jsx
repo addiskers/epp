@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { api, downloadFile, fmtDate, qs, STATUS_LABEL, CALLER_TYPES, LANG_NAME, cap } from '../api.js'
 import { useAuth } from '../auth.jsx'
 import PageHeader from '../components/PageHeader.jsx'
@@ -10,6 +10,7 @@ const PAGE = 25
 
 export default function Tickets() {
   const { isAdmin } = useAuth()
+  const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
   const [items, setItems] = useState([])
   const [total, setTotal] = useState(0)
@@ -66,7 +67,7 @@ export default function Tickets() {
         </div>
         <select value={f.status} onChange={(e) => set('status', e.target.value)}>
           <option value="">All statuses</option>
-          <option value="open,under_review,escalated">Open (any)</option>
+          <option value="open,under_review,escalated">Unresolved (open, under review, escalated)</option>
           {Object.entries(STATUS_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
         </select>
         <select value={f.priority} onChange={(e) => set('priority', e.target.value)}>
@@ -113,8 +114,9 @@ export default function Tickets() {
             {loading ? <tr><td colSpan={10} className="empty">Loading…</td></tr>
               : !items.length ? <tr><td colSpan={10} className="empty">No tickets match.</td></tr>
               : items.map((t) => (
-                <tr key={t.ticket_id} className="clickable" onClick={() => {}}>
-                  <td><Link to={`/tickets/${t.ticket_id}`} style={{ fontFamily: 'var(--mono)', fontWeight: 600, color: 'var(--green-2)' }}>{t.ticket_id}</Link></td>
+                <tr key={t.ticket_id} className="clickable" title="Open this ticket"
+                    onClick={() => navigate(`/tickets/${t.ticket_id}`)}>
+                  <td onClick={(e) => e.stopPropagation()}><Link to={`/tickets/${t.ticket_id}`} style={{ fontFamily: 'var(--mono)', fontWeight: 600, color: 'var(--green-2)' }}>{t.ticket_id}</Link></td>
                   <td>{fmtDate(t.created_at)}</td>
                   <td><TypePill type={t.caller_type} /></td>
                   <td>{t.caller_name || <span className="muted">—</span>}<div className="muted" style={{ fontSize: '0.72rem' }}>{t.contact_number}</div></td>

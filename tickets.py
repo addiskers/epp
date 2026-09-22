@@ -46,6 +46,100 @@ _DIGIT_WORDS = {
 }
 _SPOKEN_DIGIT = {d: w for w, d in _DIGIT_WORDS.items() if w not in ("oh", "o")}
 
+# Spoken-number vocabulary for a caller reading a reference out loud: English number words,
+# romanised Hindi and Devanagari digits, and "double"/"triple". Values: an int for a number
+# word, or a tag for a multiplier/repeater.
+_ONES = {
+    "zero": 0, "oh": 0, "o": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9,
+    "shunya": 0, "sifar": 0, "ek": 1, "do": 2, "teen": 3, "char": 4, "chaar": 4, "paanch": 5,
+    "panch": 5, "chhe": 6, "che": 6, "saat": 7, "aath": 8, "nau": 9,
+    "शून्य": 0, "जीरो": 0, "एक": 1, "दो": 2, "तीन": 3, "चार": 4, "पांच": 5, "पाँच": 5, "छह": 6,
+    "छः": 6, "सात": 7, "आठ": 8, "नौ": 9,
+}
+_TEENS = {"ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+          "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "das": 10, "दस": 10}
+_TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70,
+         "eighty": 80, "ninety": 90}
+_MULT = {"hundred": 100, "thousand": 1000, "sau": 100, "hazaar": 1000, "hazar": 1000, "सौ": 100, "हज़ार": 1000}
+_REPEAT = {"double": 2, "triple": 3}
+_NUMBER_WORDS = set(_ONES) | set(_TEENS) | set(_TENS) | set(_MULT) | set(_REPEAT)
+
+
+def _words_to_digits(tokens) -> str:
+    """'two thousand twenty six zero zero zero zero one two' -> '2026000012'.
+
+    Consecutive words that legally compose one number ('two thousand twenty six', 'one hundred
+    and twenty three', 'twenty six') are summed into one group; a lone digit word starts a new
+    group ('two zero two six' -> 2 0 2 6); 'double'/'triple' repeat the next digit; plain digit
+    tokens pass through. Groups are concatenated in order."""
+    out = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        tok = tokens[i]
+        if tok.isdigit():
+            out.append(tok)
+            i += 1
+            continue
+        if tok in _REPEAT and i + 1 < n and tokens[i + 1] in _ONES:
+            out.append(str(_ONES[tokens[i + 1]]) * _REPEAT[tok])
+            i += 2
+            continue
+        if tok not in _NUMBER_WORDS or tok in _MULT:
+            i += 1                                   # letters, 'and', a stray multiplier
+            continue
+        # Start a numeric phrase and extend it only while the grammar allows.
+        total, current = 0, 0
+        if tok in _ONES:
+            current = _ONES[tok]
+            last = "ones"
+        elif tok in _TEENS:
+            current = _TEENS[tok]
+            last = "teens"
+        else:
+            current = _TENS[tok]
+            last = "tens"
+        i += 1
+        while i < n:
+            nxt = tokens[i]
+            if nxt == "and" and i + 1 < n and tokens[i + 1] in _NUMBER_WORDS and last == "mult":
+                i += 1
+                continue
+            if nxt in _MULT:
+                m = _MULT[nxt]
+                if m == 1000:
+                    total = (total + current) * 1000 if last != "mult" else total * 1000
+                    current = 0
+                else:
+                    current = (current or 1) * m
+                last = "mult"
+                i += 1
+                continue
+            if last == "mult" and nxt in _TENS:
+                total += current
+                current = _TENS[nxt]
+                last = "tens"
+                i += 1
+                continue
+            if last == "mult" and (nxt in _ONES or nxt in _TEENS):
+                total += current
+                current = _ONES.get(nxt, _TEENS.get(nxt))
+                last = "ones" if nxt in _ONES else "teens"
+                i += 1
+                # a ones word after a multiplier closes the phrase unless another multiplier follows
+                if not (i < n and tokens[i] in _MULT):
+                    break
+                continue
+            if last == "tens" and nxt in _ONES and _ONES[nxt] != 0:
+                current += _ONES[nxt]
+                last = "ones"
+                i += 1
+                break
+            break                                    # anything else starts a new group
+        out.append(str(total + current))
+    return "".join(out)
+
 
 class TicketError(ValueError):
     pass
@@ -97,12 +191,14 @@ def normalize_ticket_number(text, now=None):
     s = str(text or "").strip().lower()
     if not s:
         return None
-    # spoken digits -> digits (English only; the model usually hands us digits anyway)
-    words = re.findall(r"[a-z]+|\d+", s)
-    if words and any(w in _DIGIT_WORDS for w in words):
-        s = " ".join(_DIGIT_WORDS.get(w, w) for w in words)
-        s = re.sub(r"(?<=\d) (?=\d)", "", s)
-    groups = re.findall(r"\d+", s)
+    # Spoken numbers ("two thousand twenty six … zero zero twelve", Hindi digit words) become
+    # one digit string; a number given as digits keeps its own grouping.
+    tokens = re.findall(r"[a-z]+|\d+|[ऀ-ॿ]+", s)
+    if any(t in _NUMBER_WORDS for t in tokens):
+        digits_str = _words_to_digits(tokens)
+        groups = [digits_str] if digits_str else []
+    else:
+        groups = re.findall(r"\d+", s)
     if not groups:
         return None
     year_now = (now or datetime.now(_IST)).year
