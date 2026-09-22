@@ -119,6 +119,7 @@ Roles: **admin** sees everything; **dept_user** sees only tickets assigned to th
 | `GET/POST /plivo/answer`, `WS /plivo/media-stream` | Plivo telephony bridge |
 | `WS /ws` | Browser-mic test (short-lived token from the Agent page) |
 | `WS /live/ws` | Live transcript feed for the dashboard (short-lived token) |
+| `WS /live/listen/{call_sid}` | Listen in on one live call: both sides as mono PCM16 8 kHz frames (admin, short-lived token; audited as `call_listened`) |
 | `GET/PUT /api/epp/subscription` | The plan and its usage (PUT: superadmins only) |
 | `GET /healthz` | Liveness |
 

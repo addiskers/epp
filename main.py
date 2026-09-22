@@ -43,7 +43,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from gemini_live import GeminiLive
 from hallucination_guard import HallucinationGuard
-from plivo_handler import PlivoMediaBridge
+from plivo_handler import ListenMixer, PlivoMediaBridge
 
 import agent_tools
 import audit
@@ -185,11 +185,18 @@ def _resolve_ws_test_context(websocket):
 # Live transcript watchers (the dashboard's live panel) and the calls currently connected.
 live_watchers: set = set()
 _active_calls: dict = {}
+# call_sid -> the PlivoMediaBridge carrying it, so an admin can listen in (kept in lockstep
+# with _active_calls: registered at call_start, dropped at call_end and when the bridge exits).
+_bridges: dict = {}
 
 
 def active_calls():
     """The calls connected right now, for the dashboard."""
     return [dict(v, call_sid=k) for k, v in _active_calls.items()]
+
+
+def live_bridge(call_sid: str):
+    return _bridges.get(call_sid or "")
 
 
 # Global cap on simultaneous live calls — inbound helpline calls AND campaign dials share it,
@@ -702,10 +709,15 @@ async def plivo_media_stream(websocket: WebSocket):
             sid = event.get("call_sid") or ""
             if sid:
                 _active_calls[sid] = {"caller": caller, "started_at": time.time(),
+                                      "caller_name": (recorder.call or {}).get("caller_name") or "",
                                       "call_id": (recorder.call or {}).get("id"), "source": source}
-            event = dict(event, call_id=(recorder.call or {}).get("id"), caller=caller, source=source)
+                _bridges[sid] = bridge
+            event = dict(event, call_id=(recorder.call or {}).get("id"), caller=caller, source=source,
+                         caller_name=(recorder.call or {}).get("caller_name") or "")
         elif etype == "call_end":
-            _active_calls.pop(event.get("call_sid") or recorder.call_meta.get("call_sid") or "", None)
+            ended_sid = event.get("call_sid") or recorder.call_meta.get("call_sid") or ""
+            _active_calls.pop(ended_sid, None)
+            _bridges.pop(ended_sid, None)
             await recorder.close()
             event = dict(event, call_id=(recorder.call or {}).get("id"),
                          ticket_id=(recorder.call or {}).get("ticket_id"))
@@ -743,6 +755,7 @@ async def plivo_media_stream(websocket: WebSocket):
         logger.error(f"Plivo bridge error: {type(e).__name__}: {e}\n{traceback.format_exc()}")
     finally:
         _active_calls.pop(bridge.call_id or "", None)
+        _bridges.pop(bridge.call_id or "", None)
         try:
             await websocket.close()
         except Exception:
@@ -770,6 +783,70 @@ async def live_ws(websocket: WebSocket):
     finally:
         live_watchers.discard(websocket)
         logger.info(f"Live watcher disconnected ({len(live_watchers)} total)")
+
+
+@app.websocket("/live/listen/{call_sid}")
+async def live_listen(websocket: WebSocket, call_sid: str):
+    """An admin listens in on one live call: both sides mixed to mono PCM16 8 kHz, one binary
+    frame per 20 ms, after a JSON `listen_start`. Listen-only — nothing reaches the caller.
+    The socket is accepted before a refusal so the browser sees the close code."""
+    token = websocket.query_params.get("token") or ""
+    claims = eo_auth.verify_live_token(token)
+    user = eo_db.get_user(int(claims["uid"])) if claims and claims.get("uid") is not None else None
+    await websocket.accept()
+    if not user or not user.get("active") or user.get("role") != "admin":
+        await websocket.close(code=4401)
+        return
+    bridge = live_bridge(call_sid)
+    if bridge is None:
+        await websocket.close(code=4404)
+        return
+    q = bridge.add_listener()
+    if q is None:
+        await websocket.close(code=4429)
+        return
+    meta = _active_calls.get(call_sid) or {}
+    audit.log("call_listened", user=user, target=f"call:{meta.get('call_id') or call_sid}",
+              detail={"call_sid": call_sid, "phone": meta.get("caller") or ""})
+    logger.info("Listen: %s is listening to call %s", user.get("username"), call_sid)
+    mixer = ListenMixer()
+    recv_task = asyncio.create_task(websocket.receive())
+    get_task = None
+    try:
+        await websocket.send_json({"type": "listen_start", "call_sid": call_sid, "rate": 8000, "format": "pcm16"})
+        while True:
+            if get_task is None:
+                get_task = asyncio.create_task(q.get())
+            done, _ = await asyncio.wait({get_task, recv_task}, return_when=asyncio.FIRST_COMPLETED)
+            if recv_task in done:
+                msg = recv_task.result() if not recv_task.cancelled() and recv_task.exception() is None else None
+                if not msg or msg.get("type") == "websocket.disconnect":
+                    break                                   # the listener left
+                recv_task = asyncio.create_task(websocket.receive())
+                continue
+            item = get_task.result()
+            get_task = None
+            if item is None:
+                break                                       # the call ended
+            out = mixer.push(*item)
+            if out:
+                await websocket.send_bytes(out)
+    except Exception:
+        pass
+    finally:
+        for t in (get_task, recv_task):
+            if t is not None and not t.done():
+                t.cancel()
+        bridge.remove_listener(q)
+        try:
+            await websocket.send_json({"type": "listen_end"})
+        except Exception:
+            pass
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+        logger.info("Listen: %s stopped listening to call %s", user.get("username"), call_sid)
 
 
 if __name__ == "__main__":

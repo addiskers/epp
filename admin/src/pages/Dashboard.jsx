@@ -129,14 +129,68 @@ function Bars({ data }) {
   )
 }
 
-// Live panel: which calls are on the line right now, and a rolling transcript feed.
+const LISTEN_CLOSE = { 4401: 'Your session expired — sign in again.', 4404: 'That call has already ended.', 4429: 'Too many people are listening to this call.' }
+const sinceTime = (epochSeconds) => epochSeconds ? new Date(epochSeconds * 1000).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : ''
+
+// Live panel: which calls are on the line right now, a rolling transcript feed, and a
+// Listen button per call (both sides, listen-only, about a second behind).
 function LivePanel({ initial }) {
   const [calls, setCalls] = useState(initial)
   const [lines, setLines] = useState([])
   const [status, setStatus] = useState('connecting')
+  const [listening, setListening] = useState(null)      // { call_sid, state: 'connecting'|'live'|'error', msg }
   const wsRef = useRef(null)
+  const playerRef = useRef(null)                        // { ws, ctx, playAt, sid }
 
   useEffect(() => { setCalls(initial) }, [initial])
+
+  function stopListening(msg) {
+    const p = playerRef.current
+    playerRef.current = null
+    if (p) {
+      try { p.ws.onclose = null; p.ws.close() } catch {}
+      try { p.ctx.close() } catch {}
+    }
+    setListening(msg ? { state: 'error', msg } : null)
+  }
+
+  async function listen(sid) {
+    stopListening()
+    setListening({ call_sid: sid, state: 'connecting' })
+    let ctx
+    try { ctx = new AudioContext(); await ctx.resume() }
+    catch { setListening({ call_sid: sid, state: 'error', msg: 'Audio playback is not available in this browser.' }); return }
+    try {
+      const { token } = await api.post('/live/token')
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+      const ws = new WebSocket(`${proto}://${location.host}/live/listen/${encodeURIComponent(sid)}?token=${encodeURIComponent(token)}`)
+      ws.binaryType = 'arraybuffer'
+      const p = { ws, ctx, playAt: 0, sid }
+      playerRef.current = p
+      ws.onopen = () => setListening({ call_sid: sid, state: 'live' })
+      ws.onmessage = (e) => {
+        if (typeof e.data === 'string') {
+          try { if (JSON.parse(e.data).type === 'listen_end') stopListening() } catch {}
+          return
+        }
+        const pcm = new Int16Array(e.data)
+        if (!pcm.length) return
+        // 8 kHz buffers; the audio node resamples to the device rate. A 250 ms jitter buffer
+        // rides out network hiccups; a backlog over a second (the tab was asleep) is dropped.
+        const buf = ctx.createBuffer(1, pcm.length, 8000)
+        const ch = buf.getChannelData(0)
+        for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768
+        const now = ctx.currentTime
+        if (p.playAt < now) p.playAt = now + 0.25
+        if (p.playAt - now > 1.0) return
+        const src = ctx.createBufferSource()
+        src.buffer = buf; src.connect(ctx.destination); src.start(p.playAt)
+        p.playAt += buf.duration
+      }
+      ws.onclose = (ev) => { if (playerRef.current === p) stopListening(LISTEN_CLOSE[ev.code] || null) }
+      ws.onerror = () => {}
+    } catch (e) { stopListening(e.message) }
+  }
 
   useEffect(() => {
     let closed = false
@@ -151,8 +205,12 @@ function LivePanel({ initial }) {
         ws.onmessage = (e) => {
           const msg = JSON.parse(e.data)
           if (msg.type === 'active_calls') setCalls(msg.calls || [])
-          else if (msg.type === 'call_start') { setCalls((c) => [...c.filter((x) => x.call_sid !== msg.call_sid), { call_sid: msg.call_sid, caller: msg.caller, started_at: Date.now() / 1000 }]); push('system', `Call started · ${msg.caller || 'unknown'}`) }
-          else if (msg.type === 'call_end') { setCalls((c) => c.filter((x) => x.call_sid !== msg.call_sid)); push('system', `Call ended${msg.ticket_id ? ` · ${msg.ticket_id}` : ''}`) }
+          else if (msg.type === 'call_start') { setCalls((c) => [...c.filter((x) => x.call_sid !== msg.call_sid), { call_sid: msg.call_sid, caller: msg.caller, caller_name: msg.caller_name, started_at: Date.now() / 1000 }]); push('system', `Call started · ${msg.caller_name ? `${msg.caller_name} · ` : ''}${msg.caller || 'unknown'}`) }
+          else if (msg.type === 'call_end') {
+            setCalls((c) => c.filter((x) => x.call_sid !== msg.call_sid))
+            if (playerRef.current?.sid === msg.call_sid) stopListening()
+            push('system', `Call ended${msg.ticket_id ? ` · ${msg.ticket_id}` : ''}`)
+          }
           else if (msg.type === 'user' && msg.text) push('user', msg.text)
           else if (msg.type === 'gemini' && msg.text) push('agent', msg.text)
           else if (msg.type === 'tool_call') push('tool', `${msg.name} → ${msg.result?.ticket_id || msg.result?.status || (msg.result?.ok === false ? 'failed' : '')}`)
@@ -167,20 +225,35 @@ function LivePanel({ initial }) {
       })
     }
     connect()
-    return () => { closed = true; try { wsRef.current?.close() } catch {} }
-  }, [])
+    return () => { closed = true; try { wsRef.current?.close() } catch {}; stopListening() }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="panel">
       <div className="panel-head">
         <h3>Live calls {status === 'live' && <span className="live-dot" style={{ marginLeft: 8 }} />}</h3>
-        <span className="muted" style={{ fontSize: '0.78rem' }}>{status === 'live' ? `${calls.length} on the line` : status}</span>
+        <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {listening?.state === 'live' && <span className="pill red"><span className="dot" />Listening</span>}
+          <span className="muted" style={{ fontSize: '0.78rem' }}>{status === 'live' ? `${calls.length} on the line` : status}</span>
+        </span>
       </div>
       {!!calls.length && (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-          {calls.map((c) => <span key={c.call_sid} className="pill blue"><span className="dot" />{c.caller || 'unknown'}</span>)}
+        <div className="stack" style={{ gap: 6, marginBottom: 10 }}>
+          {calls.map((c) => {
+            const on = listening?.call_sid === c.call_sid && listening.state !== 'error'
+            return (
+              <div key={c.call_sid} className="row-between" style={{ fontSize: '0.82rem' }}>
+                <span className="pill blue"><span className="dot" />{c.caller_name ? `${c.caller_name} · ` : ''}{c.caller || 'unknown'}</span>
+                <span className="muted" style={{ fontSize: '0.74rem' }}>{c.started_at ? `since ${sinceTime(c.started_at)}` : ''}</span>
+                {on
+                  ? <button className="btn danger sm" onClick={() => stopListening()}>{listening.state === 'connecting' ? 'Connecting…' : 'Stop'}</button>
+                  : <button className="btn ghost sm" title="Hear both sides of this call (listen-only; the caller is not affected)" onClick={() => listen(c.call_sid)}>Listen</button>}
+              </div>
+            )
+          })}
         </div>
       )}
+      {listening?.state === 'error' && <div className="err" style={{ marginBottom: 8 }}>{listening.msg}</div>}
       <div style={{ maxHeight: 180, overflow: 'auto', fontSize: '0.8rem', lineHeight: 1.5 }}>
         {!lines.length ? <div className="muted">Transcripts of calls in progress appear here.</div> : lines.map((l, i) => (
           <div key={i}>

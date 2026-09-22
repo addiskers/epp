@@ -296,6 +296,81 @@ def pcm24k_to_mulaw(pcm_bytes: bytes) -> bytes:
                  for i in range(0, n_samples - 2, 3))
 
 
+class Pcm24kToMulaw:
+    """Stateful 24 kHz PCM16 → 8 kHz mulaw converter for ONE call.
+
+    Gemini's audio chunks are not multiples of three samples. Converting each chunk on its own
+    dropped the 1–2 leftover samples (and a split byte) at EVERY chunk boundary — a small step
+    in the waveform fifty times a second, heard as crackle in the agent's voice both live and
+    in the recording. The leftover bytes are carried into the next chunk instead."""
+    __slots__ = ("_pending",)
+
+    def __init__(self):
+        self._pending = b""
+
+    def convert(self, pcm_bytes: bytes) -> bytes:
+        buf = (self._pending + pcm_bytes) if self._pending else pcm_bytes
+        usable = (len(buf) // 6) * 6                 # whole groups of three 16-bit samples
+        self._pending = bytes(buf[usable:])
+        if not usable:
+            return b""
+        return pcm24k_to_mulaw(buf[:usable])
+
+    def reset(self) -> None:
+        """Drop the carry (a barge-in flushed the turn; its tail must not prefix the next)."""
+        self._pending = b""
+
+
+def _mulaw_to_pcm8k(mulaw_bytes: bytes) -> bytes:
+    """One mulaw frame → PCM16 at the same 8 kHz (no resampling)."""
+    if _np is not None:
+        return _MULAW_DECODE_NP[_np.frombuffer(mulaw_bytes, dtype=_np.uint8)].tobytes()
+    return struct.pack(f"<{len(mulaw_bytes)}h", *(_MULAW_DECODE[b] for b in mulaw_bytes))
+
+
+def _sum_pcm16(a: bytes, b: bytes) -> bytes:
+    """Sum two PCM16 frames with saturation (both voices keep their level; no −6 dB pumping)."""
+    n = min(len(a), len(b)) // 2
+    if _np is not None:
+        x = _np.frombuffer(a, dtype=_np.int16, count=n).astype(_np.int32)
+        y = _np.frombuffer(b, dtype=_np.int16, count=n).astype(_np.int32)
+        return _np.clip(x + y, -32768, 32767).astype(_np.int16).tobytes()
+    xs = struct.unpack(f"<{n}h", a[:n * 2])
+    ys = struct.unpack(f"<{n}h", b[:n * 2])
+    return struct.pack(f"<{n}h", *(max(-32768, min(32767, x + y)) for x, y in zip(xs, ys)))
+
+
+class ListenMixer:
+    """Mixes the two directions of one call into mono PCM16 8 kHz frames for an admin who is
+    listening in. The caller's stream is the clock (Plivo sends it non-stop, 20 ms a frame);
+    each caller frame carries one queued agent frame with it. If the caller stream stalls, a
+    backlog of agent frames is played on its own so the agent is never muted."""
+
+    def __init__(self, backlog: int = 5, max_queue: int = 25):
+        self._out = []
+        self._backlog = max(1, int(backlog))
+        self._max = max(self._backlog + 1, int(max_queue))
+
+    def push(self, direction: str, mulaw: bytes):
+        """Returns one 320-byte PCM16 frame to send, or None."""
+        if direction == "out":
+            self._out.append(mulaw)
+            if len(self._out) > self._max:
+                del self._out[0]
+            if len(self._out) > self._backlog:
+                return _mulaw_to_pcm8k(self._out.pop(0))
+            return None
+        frame = _mulaw_to_pcm8k(mulaw)
+        if self._out:
+            frame = _sum_pcm16(frame, _mulaw_to_pcm8k(self._out.pop(0)))
+        return frame
+
+
+# Admin "Listen" taps: bounded per listener (2 s of both directions), drop-oldest, at most this
+# many listeners per call so a popular call can never load the bridge.
+LISTEN_QUEUE_ITEMS = 200
+LISTEN_MAX = 8
+
 # 20ms of mulaw @ 8kHz = 160 bytes per frame
 ULAW_FRAME_BYTES = 160
 ULAW_FRAME_S = 0.020
@@ -388,6 +463,8 @@ class PlivoMediaBridge:
         # Outbound (to Plivo) paced 20ms mulaw frames
         self._out_frames = asyncio.Queue()
         self._residual = bytearray()
+        self._conv = Pcm24kToMulaw()             # carries the odd samples across Gemini chunks
+        self._listeners = set()                  # admin "Listen" queues (see add_listener)
         self._started = False
         self._call_end_emitted = False
         self._pending_hangup_task = None
@@ -466,37 +543,60 @@ class PlivoMediaBridge:
         self._rec_on = os.getenv("EO_RECORD_CALLS", "true").strip().lower() not in ("0", "false", "no", "off")
         self._rec_t0 = None
         self._rec = array.array("h")             # mono 8kHz PCM16 mix (sample-indexed timeline)
+        self._rec_pos = {"in": 0, "out": 0}      # next write index per direction (a sample-count clock)
+        self._rec_seen = {"in": False, "out": False}
         try:
             self._rec_max_samples = int(float(os.getenv("EO_RECORD_MAX_SECONDS", "900")) * 8000)
         except ValueError:
             self._rec_max_samples = 900 * 8000
 
-    def _rec_add(self, mulaw_bytes):
-        """Mix one ~20ms mulaw frame (either direction) into the recording timeline at its
-        real-time offset. Guarded — never raises into the live audio path."""
+    def _rec_add(self, mulaw_bytes, direction="in"):
+        """Mix one 20 ms mulaw frame into the recording timeline. Guarded — never raises into
+        the live audio path.
+
+        Each direction keeps its OWN sample counter, so the frames of a continuous stream land
+        back to back however late the event loop got to them. Placing every frame by the wall
+        clock (the old way) inserted a few zero samples before a late frame and half-level
+        overlaps before an early one — a step in the waveform at almost every frame boundary,
+        which is the crackle heard in the recordings. The wall clock only seeds a direction's
+        first frame and re-syncs it after a real silence (more than 40 ms), in whole frames.
+        Where the two directions overlap (double-talk) the samples are summed with saturation,
+        so neither voice drops by half at the edges."""
         if not self._rec_on or not mulaw_bytes:
             return
         try:
             now = time.monotonic()
             if self._rec_t0 is None:
                 self._rec_t0 = now
-            start = int((now - self._rec_t0) * 8000)
+            n = len(mulaw_bytes)
+            wall = int((now - self._rec_t0) * 8000)
+            if direction not in self._rec_pos:
+                direction = "in"
+            if not self._rec_seen[direction]:
+                start = (wall // n) * n
+                self._rec_seen[direction] = True
+            else:
+                start = self._rec_pos[direction]
+                lead = wall - start                   # > 0: this direction was idle (or is late)
+                if lead > 2 * n:
+                    start += (lead // n) * n          # silence, in whole 20 ms frames
+            self._rec_pos[direction] = start + n
             if start > self._rec_max_samples:
-                return                            # cap runaway recordings
+                return                                # cap runaway recordings
             buf = self._rec
-            n = len(buf)
-            if n < start:                         # silence gap since the last frame
-                buf.frombytes(bytes(2 * (start - n)))   # append (start-n) zero int16 samples
-                n = start
+            cur = len(buf)
+            if cur < start:                           # silence gap since the last frame
+                buf.frombytes(bytes(2 * (start - cur)))
+                cur = start
             if _np is not None:
                 dec_np = _MULAW_DECODE_NP[_np.frombuffer(mulaw_bytes, dtype=_np.uint8)]
-                ov = min(n - start, len(dec_np)) if start < n else 0
-                if ov > 0:                        # overlap (barge-in) — AVERAGE (-6dB mix), no clip needed
+                ov = min(cur - start, len(dec_np)) if start < cur else 0
+                if ov > 0:                            # the other direction is already here: sum + clip
                     # .astype copies immediately, so no numpy view keeps buf's buffer exported
                     # (a live export would make the frombytes append below raise BufferError).
                     old = _np.frombuffer(buf, dtype=_np.int16, count=ov,
                                          offset=start * 2).astype(_np.int32)
-                    mixed = (old + dec_np[:ov].astype(_np.int32)) >> 1
+                    mixed = _np.clip(old + dec_np[:ov].astype(_np.int32), -32768, 32767)
                     buf[start:start + ov] = array.array("h", mixed.astype(_np.int16).tobytes())
                 if ov < len(dec_np):
                     buf.frombytes(dec_np[ov:].tobytes())
@@ -505,13 +605,58 @@ class PlivoMediaBridge:
             for i, b in enumerate(mulaw_bytes):
                 s = dec[b]
                 idx = start + i
-                if idx < n:                       # overlap (barge-in) — AVERAGE (no clip) not raw sum
-                    v = (buf[idx] + s) >> 1       # -6dB mix keeps both voices in-range, no distortion
+                if idx < cur:
+                    v = buf[idx] + s
                     buf[idx] = 32767 if v > 32767 else (-32768 if v < -32768 else v)
                 else:
                     buf.append(s)
         except Exception:
             pass
+
+    # Admin "Listen": every audio frame in either direction is also handed to each listener
+    # queue. Sync, never awaits, never raises into the audio path; a full queue drops its oldest
+    # frame, a broken one is dropped altogether.
+
+    def add_listener(self, maxsize: int = LISTEN_QUEUE_ITEMS):
+        """A queue of (direction, mulaw_bytes) for one listener, or None when the call already
+        has LISTEN_MAX listeners. `None` in the queue means the call has ended."""
+        if len(self._listeners) >= LISTEN_MAX:
+            return None
+        q = asyncio.Queue(maxsize=max(10, int(maxsize)))
+        self._listeners.add(q)
+        return q
+
+    def remove_listener(self, q) -> None:
+        self._listeners.discard(q)
+
+    def _tap(self, direction: str, mulaw_bytes: bytes) -> None:
+        if not self._listeners:
+            return
+        for q in tuple(self._listeners):
+            try:
+                q.put_nowait((direction, mulaw_bytes))
+            except asyncio.QueueFull:
+                try:
+                    q.get_nowait()
+                    q.put_nowait((direction, mulaw_bytes))
+                except Exception:
+                    self._listeners.discard(q)
+            except Exception:
+                self._listeners.discard(q)
+
+    def _close_listeners(self) -> None:
+        for q in tuple(self._listeners):
+            try:
+                q.put_nowait(None)
+            except asyncio.QueueFull:
+                try:
+                    q.get_nowait()
+                    q.put_nowait(None)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        self._listeners.clear()
 
     def _write_recording(self):
         """Flush the mixed timeline to a mono/8kHz/16-bit WAV keyed by call_sid. Guarded."""
@@ -601,7 +746,7 @@ class PlivoMediaBridge:
         self._reply_nudged = False               # the agent IS replying — re-arm the missed-reply rescue
         self._spoke_since_user = True            # a genuine agent frame is going out this "since-caller" window
         try:
-            self._residual.extend(pcm24k_to_mulaw(data))
+            self._residual.extend(self._conv.convert(data))
             while len(self._residual) >= ULAW_FRAME_BYTES:
                 frame = bytes(self._residual[:ULAW_FRAME_BYTES])
                 del self._residual[:ULAW_FRAME_BYTES]
@@ -676,7 +821,8 @@ class PlivoMediaBridge:
                     # keep the frame cadence on failures too — otherwise a burst burns the 25-failure budget in microseconds instead of ~0.5s
                     await asyncio.sleep(ULAW_FRAME_S)
                     continue
-                self._rec_add(frame)               # record what the caller heard (agent side)
+                self._rec_add(frame, "out")        # record what the caller heard (agent side)
+                self._tap("out", frame)
                 now = time.monotonic()
                 self._last_agent_audio = now       # PLAYOUT time (paced) — silence timers key on this
                 next_t = (next_t or now) + ULAW_FRAME_S
@@ -692,6 +838,7 @@ class PlivoMediaBridge:
 
     def _drain_outbound(self):
         self._residual.clear()
+        self._conv.reset()                       # the flushed turn's tail must not prefix the next one
         n = 0
         try:
             while True:
@@ -884,7 +1031,8 @@ class PlivoMediaBridge:
                         # Real-time VAD: stamp caller activity on VOICED frames (long before transcription) so idle/hangup guards never fire mid-speech; energy-gated since Plivo streams ~20ms frames non-stop.
                         track = str(media.get("track") or "inbound").lower()
                         if track == "inbound":
-                            self._rec_add(mulaw_bytes)   # record the caller side (all frames)
+                            self._rec_add(mulaw_bytes, "in")   # record the caller side (all frames)
+                            self._tap("in", mulaw_bytes)
                             frame_ms = _mulaw_frame_meansquare(mulaw_bytes)
                             now_m = time.monotonic()
                             if frame_ms >= self._vad_ms_threshold:
@@ -1535,6 +1683,7 @@ class PlivoMediaBridge:
                     await dialer.hangup_call(self.call_id)
                 except Exception:
                     pass
+            self._close_listeners()            # anyone listening in hears the call end
             self._write_recording()            # audio tasks stopped — flush the mixed WAV
             if self._gate_on and self._gate_frames:
                 logger.info(f"Noise squelch: {self._gate_squelched}/{self._gate_frames} inbound frames "

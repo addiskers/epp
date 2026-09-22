@@ -1013,3 +1013,182 @@ def test_a_malformed_listen_seconds_falls_back_rather_than_crashing_the_call():
     b = PlivoMediaBridge(FakeWS(), gemini_client=None, text_trigger="[go]",
                          listen_seconds="not a number")
     assert b.listen_seconds == 0.0
+
+
+# ---------------------------------------------------------------------------------------
+# Crackle: the 24k→8k converter carries its remainder across chunks; the recording places
+# frames by a per-direction sample counter, not the wall clock.
+# ---------------------------------------------------------------------------------------
+
+def _mulaw_const(v, n=160):
+    return bytes([_pcm16_to_mulaw_sample(v)]) * n
+
+
+def _dec(v):
+    return _MULAW_DECODE[_pcm16_to_mulaw_sample(v)]
+
+
+def test_stateful_converter_matches_whole_stream_conversion():
+    import math
+    import random
+    rnd = random.Random(3)
+    samples = [int(8000 * math.sin(i / 7.0)) + rnd.randint(-300, 300) for i in range(24000)]
+    pcm = struct.pack(f"<{len(samples)}h", *samples)
+    ref = pcm24k_to_mulaw(pcm)
+    sizes = [7, 1000, 3, 4801, 2, 6000, 1, 999]            # odd lengths, never a multiple of 6
+    conv = ph.Pcm24kToMulaw()
+    out, naive, pos, i = b"", b"", 0, 0
+    while pos < len(pcm):
+        n = sizes[i % len(sizes)]
+        i += 1
+        out += conv.convert(pcm[pos:pos + n])
+        naive += pcm24k_to_mulaw(pcm[pos:pos + n])
+        pos += n
+    assert out == ref[:len(out)] and len(ref) - len(out) <= 1
+    assert len(naive) < len(out)                              # the old way dropped samples at chunk boundaries
+
+
+def test_converter_reset_drops_the_carry():
+    conv = ph.Pcm24kToMulaw()
+    assert len(conv.convert(b"\x00" * 7)) == 1 and conv._pending == b"\x00"
+    conv.reset()
+    assert conv.convert(b"\x00" * 5) == b"" and conv._pending == b"\x00" * 5
+    assert len(conv.convert(b"\x00")) == 1 and conv._pending == b""
+
+
+def test_recording_jittered_caller_stream_has_no_gaps_or_steps(monkeypatch):
+    import random
+    clock = [100.0]
+    monkeypatch.setattr(ph.time, "monotonic", lambda: clock[0])
+    b = _bridge()
+    b._rec_on = True
+    frame = _mulaw_const(8000)
+    rnd = random.Random(7)
+    for i in range(50):
+        clock[0] = 100.0 + i * 0.020 + rnd.uniform(-0.019, 0.019)   # frames arrive early and late
+        b._rec_add(frame, "in")
+    assert len(b._rec) == 8000                                     # exactly one second, no inserted zeros
+    assert set(b._rec) == {_dec(8000)}                             # and no half-level overlaps
+
+
+def test_recording_agent_stream_seeded_by_wall_clock_then_contiguous_and_summed(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(ph.time, "monotonic", lambda: clock[0])
+    b = _bridge()
+    b._rec_on = True
+    fin, fout = _mulaw_const(8000), _mulaw_const(-4000)
+    for i in range(100):                                          # 2 s of caller audio
+        clock[0] = i * 0.020
+        b._rec_add(fin, "in")
+    for i in range(20):                                           # the agent starts at 0.4137 s, jittered
+        clock[0] = 0.4137 + i * 0.020 + (0.007 if i % 2 else -0.004)
+        b._rec_add(fout, "out")
+    assert len(b._rec) == 16000
+    seg = b._rec[3200:3200 + 20 * 160]                            # 0.4137 s quantised to a whole frame
+    assert set(seg) == {_dec(8000) + _dec(-4000)}                 # summed, not averaged, no gaps
+    assert b._rec[3199] == _dec(8000) and b._rec[3200 + 20 * 160] == _dec(8000)
+
+
+def test_recording_idle_gap_is_inserted_in_whole_frames(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(ph.time, "monotonic", lambda: clock[0])
+    b = _bridge()
+    b._rec_on = True
+    f = _mulaw_const(8000)
+    b._rec_add(f, "out")
+    clock[0] = 1.013                                               # silent for a second
+    b._rec_add(f, "out")
+    assert b._rec_pos["out"] == 8160 and len(b._rec) == 8160
+    assert b._rec[7999] == 0 and b._rec[8000] == _dec(8000)
+
+
+def test_recording_clips_instead_of_wrapping():
+    b = _bridge()
+    b._rec_on = True
+    loud = _mulaw_const(32000)
+    b._rec_add(loud, "in")
+    b._rec_add(loud, "out")
+    assert set(b._rec) == {32767}
+
+
+def test_rec_add_never_raises():
+    b = _bridge()
+    b._rec_on = True
+    b._rec = None
+    b._rec_add(b"\x00" * 160, "in")                                # swallowed
+
+
+# ---------------------------------------------------------------------------------------
+# Listen: taps, bounded queues, mixer
+# ---------------------------------------------------------------------------------------
+
+def test_listeners_receive_frames_from_both_taps():
+    async def run():
+        media = json.dumps({"event": "media", "media": {"track": "inbound",
+                                                        "payload": base64.b64encode(b"\x01" * 160).decode()}})
+        ws = FakeWS(incoming=[media])
+        b = _bridge(ws)
+        b._rec_on = False
+        q = b.add_listener()
+        await b.handle_plivo_messages()                            # one inbound frame, then hangup
+        b.stream_id = "s1"
+        b._out_frames.put_nowait(b"\x02" * 160)
+        task = asyncio.create_task(b._outbound_sender())
+        await asyncio.sleep(0.1)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        items = []
+        while not q.empty():
+            items.append(q.get_nowait())
+        return items
+    assert asyncio.run(run()) == [("in", b"\x01" * 160), ("out", b"\x02" * 160)]
+
+
+def test_listener_queue_drops_oldest_and_removal_stops_delivery():
+    async def run():
+        b = _bridge()
+        q = b.add_listener(maxsize=10)
+        for i in range(12):
+            b._tap("in", bytes([i]) * 160)
+        got = [q.get_nowait()[1][0] for _ in range(10)]
+        b.remove_listener(q)
+        b._tap("in", b"\x63" * 160)
+        empty = q.empty()
+        q2 = b.add_listener()
+        b._close_listeners()
+        return got, empty, q2.get_nowait(), len(b._listeners)
+    got, empty, sentinel, n = asyncio.run(run())
+    assert got == list(range(2, 12)) and empty and sentinel is None and n == 0
+
+
+def test_listener_cap_and_broken_listener():
+    class Bad(asyncio.Queue):
+        def put_nowait(self, item):
+            raise RuntimeError("boom")
+
+    async def run():
+        b = _bridge()
+        bad = Bad()
+        b._listeners.add(bad)
+        good = b.add_listener()
+        b._tap("in", b"\x01" * 160)                                # the bad queue is dropped, the good one fed
+        dropped = bad not in b._listeners
+        while b.add_listener() is not None:
+            pass
+        return dropped, good.qsize(), len(b._listeners)
+    dropped, fed, n = asyncio.run(run())
+    assert dropped and fed == 1 and n == ph.LISTEN_MAX
+
+
+def test_listen_mixer_sums_and_plays_the_agent_alone_when_the_caller_stalls():
+    m = ph.ListenMixer(backlog=2)
+    fin, fout = _mulaw_const(8000), _mulaw_const(-4000)
+    assert m.push("out", fout) is None
+    assert struct.unpack("<160h", m.push("in", fin)) == (_dec(8000) + _dec(-4000),) * 160
+    assert set(struct.unpack("<160h", m.push("in", fin))) == {_dec(8000)}          # nothing queued: caller only
+    assert m.push("out", fout) is None and m.push("out", fout) is None
+    assert set(struct.unpack("<160h", m.push("out", fout))) == {_dec(-4000)}        # backlog: agent alone
+    loud = _mulaw_const(32000)
+    m2 = ph.ListenMixer()
+    m2.push("out", loud)
+    assert set(struct.unpack("<160h", m2.push("in", loud))) == {32767}              # clipped, never wrapped
