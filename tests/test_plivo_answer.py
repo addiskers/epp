@@ -24,7 +24,7 @@ def _check(client, xml, uuid):
     meta = main._pending_call_meta[uuid]
     assert meta["caller"] == "+919904240078" and meta["direction"] == "inbound"
     assert len(meta["ctx"]["system_instruction"]) > 5000          # the real script, not the fallback
-    assert "Welcome to EPP Composites" in meta["ctx"]["system_instruction"]
+    assert "Thank you for calling EPP Composites" in meta["ctx"]["system_instruction"]
     # the intake agent's own opening trigger, not prompt_render.DEFAULT_TRIGGER
     assert "THE OPENING" in meta["ctx"]["trigger"] and "Say your opening line now" not in meta["ctx"]["trigger"]
     assert [t["name"] for t in meta["ctx"]["tools"]] == ["create_ticket", "lookup_ticket", "update_ticket", "end_call"]
@@ -54,6 +54,16 @@ def test_query_string_wins_over_form_for_our_own_test_dials(client):
     import main
     meta = main._pending_call_meta["uuid-test-1"]
     assert meta["caller"] == "+919904240078" and meta["direction"] == "test"
+
+
+def test_inbound_from_without_plus_is_stored_as_e164(client):
+    """Plivo sends From as '919904240078'. The call record, the spoken number and the
+    known-caller match all expect E.164, so the answer webhook normalises it."""
+    r = client.post("/plivo/answer", data={"From": "919904240078", "CallUUID": "uuid-noplus"})
+    assert r.status_code == 200
+    import main
+    assert main._pending_call_meta["uuid-noplus"]["caller"] == "+919904240078"
+    assert "X-Caller=%2B919904240078" in r.text
 
 
 def test_media_stream_link_never_depends_on_the_gemini_key(client):

@@ -153,7 +153,7 @@ def test_intake_prompt_carries_the_verbatim_greeting_but_not_the_confirmation_li
     tool result hands the sentence over (say_now) with the real number embedded."""
     import tickets
     t = epp_seeds.INTAKE_PROMPT
-    assert '"Welcome to {helpline_name}.' in t
+    assert '"Thank you for calling {helpline_name}.' in t
     assert "Your concern has been successfully registered" not in t
     assert "say_now" in t and "You do NOT have a reference number until create_ticket" in t
     assert "Please explain your concern in detail" in t
@@ -203,6 +203,6 @@ def test_intake_prompt_renders_with_no_gaps_against_the_seeds(monkeypatch):
     r = pr.render_prompt(epp_seeds.SEEDS[0], caller_phone="+919876543210", categories=cats,
                          departments=deps, now=NOW)
     assert r["missing"] == []
-    assert "Welcome to EPP Composites Support Helpline." in r["system_instruction"]
+    assert "Thank you for calling EPP Composites Support Helpline." in r["system_instruction"]
     assert "- Employee: Salary, Payslip" in r["system_instruction"]
     assert "Punjabi, Odia and Assamese" in r["system_instruction"]

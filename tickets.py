@@ -17,6 +17,7 @@ import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+import audit
 import eo_db
 import languages
 import routing
@@ -221,6 +222,9 @@ def normalize_ticket_number(text, now=None):
 
 
 def _clean_phone(raw, fallback=""):
+    """E.164 for anything an Indian caller or operator types: "98765 43210", "098765 43210",
+    "+91 98765 43210", "91 98765 43210", or a full +CC number. Fewer than 10 digits is not a
+    phone number and comes back as "" so a slip never turns into a dial attempt."""
     digits = re.sub(r"\D", "", str(raw or ""))
     if not digits:
         digits = re.sub(r"\D", "", str(fallback or ""))
@@ -228,10 +232,12 @@ def _clean_phone(raw, fallback=""):
         return ""
     if len(digits) == 10:
         return "+91" + digits
+    if len(digits) == 11 and digits.startswith("0"):
+        return "+91" + digits[1:]                    # domestic trunk-prefix form
     if len(digits) == 12 and digits.startswith("91"):
         return "+" + digits
-    if str(raw or fallback or "").strip().startswith("+"):
-        return "+" + digits
+    if len(digits) < 10:
+        return ""
     return "+" + digits
 
 
@@ -319,6 +325,13 @@ def create_from_tool(args: dict, call_meta: dict | None = None) -> dict:
                                    note=f"routed by category '{category_name}'")
         logger.info("TICKET %s created: %s/%s prio=%s dept=%s call=%s",
                     ticket_id, caller_type, category_name, priority, dept_name, call_meta.get("call_id"))
+        # The audit log answers "was a ticket created on this call?" without a join to
+        # ticket_events, so the agent's registrations are recorded there too.
+        audit.log("ticket_created", user=audit.AGENT, target=f"ticket:{ticket_id}",
+                  detail={"phone": _clean_phone(args.get("contact_number"), call_meta.get("caller")),
+                          "caller_type": caller_type, "category": category_name, "priority": priority,
+                          "call_id": call_meta.get("call_id") or "",
+                          "source": "campaign" if campaign_id else (call_meta.get("source") or "voice")})
         return {
             "ok": True,
             "ticket_id": ticket_id,
@@ -667,7 +680,8 @@ async def post_call(call_id: str):
                         "subcategory": result.get("subcategory") or "",
                         "high_priority_reason": (result.get("escalation_flags") or ["none"])[0],
                     },
-                    {"call_id": call.get("id"), "call_sid": call.get("call_sid"), "caller": call.get("caller")},
+                    {"call_id": call.get("id"), "call_sid": call.get("call_sid"), "caller": call.get("caller"),
+                     "source": "post_call"},
                 )
                 if res.get("ok"):
                     eo_db.update_ticket(res["ticket_id"], source="post_call")

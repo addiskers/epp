@@ -7,6 +7,16 @@ import { IconSearch } from '../components/icons.jsx'
 
 const PAGE = 50
 
+// Colour by what the row means: red = something failed, green = a ticket was registered on a
+// call, blue = a call ended without one, amber = someone viewed a transcript or recording.
+function pillClass(action) {
+  if (action === 'ticket_created' || action === 'ticket_created_manual') return 'green'
+  if (action === 'call_no_ticket' || action === 'call_listened') return 'blue'
+  if (action.includes('failed')) return 'red'
+  if (action.includes('viewed') || action.includes('played')) return 'amber'
+  return 'src'
+}
+
 export default function AuditLog() {
   const [items, setItems] = useState([])
   const [total, setTotal] = useState(0)
@@ -51,7 +61,7 @@ export default function AuditLog() {
               <tr key={a.id}>
                 <td>{fmtDate(a.created_at)}</td>
                 <td>{a.username || <span className="muted">—</span>}</td>
-                <td><span className={`pill ${a.action.includes('failed') ? 'red' : a.action.includes('viewed') || a.action.includes('played') ? 'amber' : 'src'}`}>{a.action}</span></td>
+                <td><span className={`pill ${pillClass(a.action)}`}>{a.action}</span></td>
                 <td style={{ fontFamily: 'var(--mono)', fontSize: '0.78rem' }}>{a.target || '—'}</td>
                 <td className="muted" style={{ fontSize: '0.76rem', maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={a.detail}>{a.detail || '—'}</td>
                 <td className="muted" style={{ fontSize: '0.76rem' }}>{a.ip || '—'}</td>

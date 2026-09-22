@@ -15,6 +15,10 @@ import eo_db
 
 logger = logging.getLogger(__name__)
 
+# The actor for rows the voice agent writes on its own (a ticket registered on a call, a call
+# that ended without one). No user id: it is not a login.
+AGENT = {"id": None, "username": "helpline-agent"}
+
 
 def _ip(request):
     if request is None:

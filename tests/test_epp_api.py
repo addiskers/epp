@@ -182,7 +182,7 @@ def test_agent_editor_rejects_unknown_placeholders_and_dead_tools(client, fresh_
     assert p["system_instruction"].startswith("Hi EPP Composites") and p["missing"] == []
     assert [t["name"] for t in p["tools"]] == ["create_ticket", "lookup_ticket", "update_ticket", "end_call"]
     r = client.post(f"/api/epp/agents/{agent['id']}/reset", headers=admin_h)
-    assert r.status_code == 200 and "Welcome to {helpline_name}" in r.json()["prompt_template"]
+    assert r.status_code == 200 and "Thank you for calling {helpline_name}" in r.json()["prompt_template"]
     tok = client.post(f"/api/epp/agents/{agent['id']}/test-token", headers=admin_h).json()["token"]
     assert eo_auth.verify_test_token(tok)["agent_id"] == agent["id"]
     assert eo_auth.verify_token(tok) is None                       # a test token is not a session

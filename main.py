@@ -46,6 +46,7 @@ from hallucination_guard import HallucinationGuard
 from plivo_handler import PlivoMediaBridge
 
 import agent_tools
+import audit
 import campaign_runner
 import campaigns
 import eo_api
@@ -206,6 +207,30 @@ MAX_LIVE_CALLS = _max_live_calls()
 def live_room() -> int:
     """How many more calls may start right now (>= 0)."""
     return max(0, MAX_LIVE_CALLS - len(_active_calls))
+
+
+def audit_call_outcome(call):
+    """One audit row for a phone call that ended WITHOUT a ticket, so the audit log answers
+    "ticket created / not created" for every call (the created ones are logged by tickets.py).
+    Browser tests are skipped. Never raises."""
+    try:
+        call = call or {}
+        if not call.get("id") or call.get("source") == "browser":
+            return
+        if call.get("ticket_id") or call.get("ticket_ids"):
+            return
+        if call.get("lookup_ticket_ids"):
+            reason = "status_inquiry"
+        elif call.get("outcome"):
+            reason = f"outcome:{call['outcome']}"
+        else:
+            reason = "no_ticket"
+        audit.log("call_no_ticket", user=audit.AGENT, target=f"call:{call['id']}",
+                  detail={"phone": call.get("caller") or "", "reason": reason,
+                          "duration_seconds": int(call.get("duration_seconds") or 0),
+                          "source": call.get("source") or ""})
+    except Exception:
+        logger.debug("call_no_ticket audit failed", exc_info=True)
 
 
 # The last time the voice model refused or dropped a session (spending cap, bad key, quota).
@@ -587,7 +612,10 @@ async def plivo_answer(request: Request):
             logger.warning("/plivo/answer: could not read the form body (%s)", e)
     # ?caller= exists only on answer URLs WE built for outbound dials (a test call, or a
     # campaign dial carrying ?campaign=&cc=); a genuine inbound call carries the number in `From`.
-    caller = qp.get("caller") or qp.get("From") or qp.get("from") or ""
+    # Plivo's From arrives as "919876543210" (no plus); store and speak it as E.164 like every
+    # other number in the system, so call records and the known-caller match line up.
+    raw_from = qp.get("From") or qp.get("from") or ""
+    caller = qp.get("caller") or (tickets._clean_phone(raw_from) or raw_from)
     call_uuid = qp.get("CallUUID") or qp.get("callUUID") or qp.get("RequestUUID") or ""
     campaign_id = cc_id = None
     try:
@@ -673,6 +701,7 @@ async def plivo_media_stream(websocket: WebSocket):
             await recorder.close()
             event = dict(event, call_id=(recorder.call or {}).get("id"),
                          ticket_id=(recorder.call or {}).get("ticket_id"))
+            audit_call_outcome(recorder.call)
         else:
             await recorder.on_event(event)
             if etype == "error":

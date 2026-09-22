@@ -111,8 +111,10 @@ def placeholders(profile):
         "ask again for the details above — confirm them in ONE short breath (\"I have you as an "
         f"{profile.get('caller_type') or 'caller'}"
         + (f" at {profile['details']['plant_location']}" if profile["details"].get("plant_location") else "")
-        + " — still correct?\") and go straight to their concern. If they have open tickets, offer to give "
-        "the status of one, or to register something new; a status still comes ONLY from lookup_ticket. "
+        + " — still correct?\") and go straight to their concern. If they have open tickets, offer to tell "
+        "them where one stands or to register something new. For the status, call lookup_ticket yourself "
+        "with the ticket number listed above (ask which one only if there are several) — never make them "
+        "recite a number you already hold — and say ONLY what the tool returns. "
         "If it is NOT them (a different person on this number), say \"no problem\" and treat them as a new "
         "caller from CALLER TYPE onwards: never read out the other person's name, details or tickets."
     )
