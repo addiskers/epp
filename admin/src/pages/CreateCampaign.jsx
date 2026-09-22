@@ -103,7 +103,7 @@ export default function CreateCampaign() {
         </div>
       )}
 
-      <div style={{ position: 'fixed', left: 'var(--sidebar-w)', right: 0, bottom: 0, padding: '12px 26px',
+      <div className="fixed-bar" style={{ padding: '12px 26px',
                     background: 'rgba(11,16,22,0.94)', borderTop: '1px solid var(--border)', backdropFilter: 'blur(8px)',
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between', zIndex: 30 }}>
         <span className="muted"><b style={{ color: 'var(--text)' }}>{selected.size}</b> {isFollowup ? 'ticket' : 'contact'}{selected.size === 1 ? '' : 's'} selected · {CAMPAIGN_TYPE_LABEL[type]}

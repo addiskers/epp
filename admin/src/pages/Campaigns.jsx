@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, qs, fmtDate, minToHHMM, CAMPAIGN_TYPE_LABEL } from '../api.js'
 import { refreshingStyle, useDebounced } from '../hooks.js'
+import InlineLoader from '../components/Loading.jsx'
 import PageHeader from '../components/PageHeader.jsx'
 import { IconSearch } from '../components/icons.jsx'
 
@@ -44,13 +45,14 @@ export default function Campaigns() {
         <div className="toolbar">
           <div className="search"><span className="ic"><IconSearch /></span>
             <input placeholder="Search campaigns…" value={q} onChange={(e) => { setPage(0); setQ(e.target.value) }} /></div>
+          <InlineLoader show={loading} label="Searching…" />
           <select value={status} onChange={(e) => { setPage(0); setStatus(e.target.value) }}>
             <option value="">All statuses</option>
             {['scheduled', 'live', 'completed', 'cancelled'].map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
         {err && <div className="err">{err}</div>}
-        <div className="table-wrap" style={refreshingStyle(loading)}>
+        <div className="table-wrap tall" style={refreshingStyle(loading)}>
           <table>
             <thead><tr>
               <th className="no-sort">Campaign</th><th className="no-sort">Type</th><th className="no-sort">Status</th>

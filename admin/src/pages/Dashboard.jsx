@@ -53,7 +53,7 @@ export default function Dashboard() {
         <Breakdown title="By priority" data={t?.by_priority} order={['high', 'medium', 'low']} labels={{ high: 'High', medium: 'Medium', low: 'Low' }} />
       </div>
 
-      <div className="grid" style={{ gridTemplateColumns: '1fr 1fr' }}>
+      <div className="grid halves">
         <div className="panel">
           <div className="panel-head"><h3>Last 7 days</h3></div>
           <Bars data={t?.by_day || []} />

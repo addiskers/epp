@@ -277,6 +277,56 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--green); 
 .bar-n { position: absolute; top: -16px; font-size: 0.7rem; color: var(--secondary); font-family: var(--mono); }
 .label-caps { font-size: 0.74rem; text-transform: uppercase; letter-spacing: .05em; color: var(--secondary); margin-bottom: 6px; }
 
+/* Loader that never moves the layout (sits in the toolbar; fades in while a table refreshes) */
+.inline-loader { display: inline-flex; align-items: center; gap: 7px; font-size: 0.76rem; color: var(--secondary); min-width: 96px; opacity: 0; transition: opacity .15s; }
+.inline-loader.on { opacity: 1; }
+.spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--green); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* A list table keeps ONE height and scrolls inside it, so a search never moves the page */
+.table-wrap.tall { height: calc(100vh - 340px); min-height: 320px; overflow: auto; }
+
+/* Two-column layouts that collapse on small screens (inline grid styles cannot) */
+.split { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) 340px; align-items: start; }
+.split.narrow { grid-template-columns: minmax(0, 1fr) 280px; }
+.grid.halves { grid-template-columns: 1fr 1fr; }
+.fixed-bar { position: fixed; left: var(--sidebar-w); right: 0; bottom: 0; }
+
+/* Phones and small tablets: the sidebar becomes a top bar with a scrolling nav */
+@media (max-width: 900px) {
+  .shell { flex-direction: column; }
+  .sidebar {
+    width: 100%; flex: none; height: auto; position: sticky; top: 0; z-index: 30;
+    flex-direction: row; align-items: center; gap: 4px; overflow-x: auto;
+    border-right: 0; border-bottom: 1px solid var(--border);
+  }
+  .brand { padding: 8px 10px; flex: 0 0 auto; }
+  .brand .sub, .brand .name { display: none; }
+  .nav { flex-direction: row; flex: 1 1 auto; overflow-x: auto; overflow-y: hidden; padding: 6px 4px; }
+  .nav a { white-space: nowrap; padding: 7px 9px; gap: 6px; font-size: 0.78rem; }
+  .nav a.active::before { display: none; }
+  .sidebar-foot { margin: 0; border: 0; padding: 6px; flex: 0 0 auto; }
+  .sidebar-foot .btn { height: 32px; padding: 0 10px; font-size: 0.74rem; }
+  .sidebar-foot .btn span, .sidebar-foot .btn svg + * { display: none; }
+  .topbar { padding: 0 12px; height: 50px; }
+  .topbar .page-sub { display: none; }
+  .content { padding: 12px; }
+  .page-head { flex-direction: column; gap: 10px; }
+  .page-actions { flex-wrap: wrap; }
+  .split, .split.narrow, .grid.halves, .two { grid-template-columns: 1fr !important; }
+  .stat-grid { grid-template-columns: 1fr 1fr; }
+  .toolbar { gap: 7px; }
+  .toolbar input, .toolbar select { min-width: 0; flex: 1 1 45%; }
+  .search { flex: 1 1 100%; }
+  .search input { min-width: 0; width: 100%; }
+  .table-wrap.tall { height: auto; max-height: 70vh; }
+  table { font-size: 0.8rem; }
+  thead th, tbody td { padding-left: 10px; padding-right: 10px; }
+  .modal { max-width: 100%; padding: 16px; }
+  .fixed-bar { left: 0; padding: 10px 12px !important; }
+  .panel, .card { padding: 14px; }
+}
+
 /* Misc */
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; box-shadow: 0 0 8px var(--green); animation: pulse 2s infinite; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }

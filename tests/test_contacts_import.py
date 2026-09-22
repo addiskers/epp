@@ -51,3 +51,12 @@ def test_template_is_a_workbook_with_text_phone_column():
     ws = wb.active
     assert [c.value for c in ws[1]] == ["Name", "Phone", "Type", "Notes"]
     assert ws["B2"].number_format == "@"
+
+
+def test_a_spreadsheet_number_cell_that_reads_as_a_whole_float_is_accepted():
+    """A plain 10-digit number typed into Excel without +91 is a numeric cell; some exports hand
+    it over as '9876543210.0'. That is a real number, not scientific-notation corruption."""
+    assert ci.normalize_phone("9876543210.0") == ("+919876543210", True)
+    assert ci.normalize_phone(9876543210) == ("+919876543210", True)
+    assert ci.normalize_phone(9876543210.0) == ("+919876543210", True)
+    assert ci.normalize_phone("9.87654321E+09") == (None, False)      # still rejected

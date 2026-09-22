@@ -62,7 +62,7 @@ export default function TicketDetail() {
       />
       {err && <div className="err">{err}</div>}
 
-      <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'minmax(0,1fr) 340px', alignItems: 'start' }}>
+      <div className="split">
         <div className="stack">
           <div className="panel">
             <div className="panel-head"><h3>The concern</h3></div>
@@ -131,7 +131,8 @@ export default function TicketDetail() {
           </div>
 
           <div className="panel">
-            <div className="panel-head"><h3>Assignment</h3></div>
+            <div className="panel-head"><h3>Classification &amp; assignment</h3></div>
+            <Field label="Category" value={t.subcategory ? `${t.category} · ${t.subcategory}` : t.category} />
             <Field label="Department" value={t.assigned_department || 'Unassigned'} />
             {isAdmin && (
               <div className="row"><label>Move to department</label>

@@ -31,10 +31,16 @@ def normalize_phone(raw):
     """Return (e164_or_None, is_valid). None => unparseable / rejected."""
     if raw is None:
         return None, False
+    if isinstance(raw, float) and raw.is_integer():
+        raw = int(raw)                               # a numeric spreadsheet cell: 9876543210.0
     s = str(raw).strip()
     if not s:
         return None, False
-    # reject float / scientific-notation corruption ("9.17619E+11", "917619000000.0")
+    # A whole-valued float string is the same numeric cell after a text export.
+    m = re.fullmatch(r"(\d+)\.0+", s)
+    if m:
+        s = m.group(1)
+    # reject scientific-notation corruption ("9.17619E+11") and fractional junk ("98765.43")
     if re.search(r"[eE][+\-]?\d", s) or re.fullmatch(r"\d+\.\d+", s):
         return None, False
     plus = s.startswith("+")

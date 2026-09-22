@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { api, downloadFile, fmtDate, qs, STATUS_LABEL, CALLER_TYPES, LANG_NAME, cap } from '../api.js'
 import { useAuth } from '../auth.jsx'
 import { refreshingStyle, useDebounced } from '../hooks.js'
+import InlineLoader from '../components/Loading.jsx'
 import PageHeader from '../components/PageHeader.jsx'
 import { IconDownload, IconSearch } from '../components/icons.jsx'
 import { PriorityPill, StatusPill, TypePill } from '../components/Pills.jsx'
@@ -93,11 +94,12 @@ export default function Tickets() {
         <input type="date" value={f.from} onChange={(e) => set('from', e.target.value)} title="From" />
         <input type="date" value={f.to} onChange={(e) => set('to', e.target.value)} title="To" />
         <button className="btn ghost sm" onClick={() => { setParams({}, { replace: true }); setPage(0) }}>Reset</button>
+        <InlineLoader show={loading} label="Searching…" />
       </div>
 
       {err && <div className="err">{err}</div>}
 
-      <div className="table-wrap" style={refreshingStyle(loading)}>
+      <div className="table-wrap tall" style={refreshingStyle(loading)}>
         <table>
           <thead>
             <tr>

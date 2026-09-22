@@ -67,7 +67,7 @@ export default function AgentEditor() {
         </>} />
       {err && <div className="err">{err}</div>}
 
-      <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'minmax(0,1fr) 280px', alignItems: 'start' }}>
+      <div className="split narrow">
         <div className="panel">
           <div className="panel-head"><h3>What it says</h3></div>
           <div className="two" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>

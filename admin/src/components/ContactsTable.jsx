@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, qs, fmtDate, cap, CALLER_TYPES } from '../api.js'
 import { refreshingStyle, useDebounced } from '../hooks.js'
+import InlineLoader from './Loading.jsx'
 import { IconSearch } from './icons.jsx'
 
 const PAGE = 25
@@ -37,6 +38,7 @@ export default function ContactsTable({ selectable, selected, onToggle, onToggle
       <div className="toolbar">
         <div className="search"><span className="ic"><IconSearch /></span>
           <input placeholder="Search name / phone / notes…" value={q} onChange={(e) => { setPage(0); setQ(e.target.value) }} /></div>
+        <InlineLoader show={loading} label="Searching…" />
         <select value={type} onChange={(e) => { setPage(0); setType(e.target.value) }}>
           <option value="">All types</option>
           {CALLER_TYPES.map((t) => <option key={t} value={t}>{cap(t)}</option>)}
@@ -44,7 +46,7 @@ export default function ContactsTable({ selectable, selected, onToggle, onToggle
         {actions}
       </div>
       {err && <div className="err">{err}</div>}
-      <div className="table-wrap" style={refreshingStyle(loading)}>
+      <div className="table-wrap tall" style={refreshingStyle(loading)}>
         <table>
           <thead><tr>
             {selectable && <th className="no-sort" style={{ width: 34 }}>

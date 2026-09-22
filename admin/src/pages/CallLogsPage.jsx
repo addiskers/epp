@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, fmtDate, fmtDur, qs, LANG_NAME } from '../api.js'
 import { refreshingStyle, useDebounced } from '../hooks.js'
+import InlineLoader from '../components/Loading.jsx'
 import CallDrawer from '../components/CallDrawer.jsx'
 import PageHeader from '../components/PageHeader.jsx'
 import { IconSearch } from '../components/icons.jsx'
@@ -59,10 +60,11 @@ export default function CallLogsPage() {
         <input type="date" value={from} onChange={(e) => { setPage(0); setFrom(e.target.value) }} />
         <input type="date" value={to} onChange={(e) => { setPage(0); setTo(e.target.value) }} />
         <button className="btn ghost sm" onClick={() => { setQ(''); setSource(''); setWithTicket(''); setFrom(''); setTo(''); setPage(0) }}>Reset</button>
+        <InlineLoader show={loading} label="Searching…" />
       </div>
       {err && <div className="err">{err}</div>}
 
-      <div className="table-wrap" style={refreshingStyle(loading)}>
+      <div className="table-wrap tall" style={refreshingStyle(loading)}>
         <table>
           <thead><tr>
             <th className="no-sort">Started</th><th className="no-sort">Source</th><th className="no-sort">Number</th>
