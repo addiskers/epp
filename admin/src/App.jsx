@@ -18,12 +18,15 @@ import CampaignDetail from './pages/CampaignDetail.jsx'
 import CreateCampaign from './pages/CreateCampaign.jsx'
 import Scheduler from './pages/Scheduler.jsx'
 
-function Protected({ children, adminOnly }) {
-  const { user, ready, isAdmin } = useAuth()
+// `page` names an admin page the server may hide (EPP_HIDDEN_PAGES); a hidden page is
+// unreachable by URL as well as missing from the menu.
+function Protected({ children, adminOnly, page }) {
+  const { user, ready, isAdmin, isHidden } = useAuth()
   const loc = useLocation()
   if (!ready) return <div className="center">Loading…</div>
   if (!user) return <Navigate to="/login" replace state={{ from: loc.pathname }} />
   if (adminOnly && !isAdmin) return <Navigate to="/" replace />
+  if (isHidden(page)) return <Navigate to="/" replace />
   return children
 }
 
@@ -35,17 +38,17 @@ export default function App() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/tickets" element={<Tickets />} />
         <Route path="/tickets/:id" element={<TicketDetail />} />
-        <Route path="/contacts" element={<Protected adminOnly><Contacts /></Protected>} />
-        <Route path="/campaigns" element={<Protected adminOnly><Campaigns /></Protected>} />
-        <Route path="/campaigns/new" element={<Protected adminOnly><CreateCampaign /></Protected>} />
-        <Route path="/campaigns/:id" element={<Protected adminOnly><CampaignDetail /></Protected>} />
-        <Route path="/scheduler" element={<Protected adminOnly><Scheduler /></Protected>} />
-        <Route path="/routing" element={<Protected adminOnly><Routing /></Protected>} />
-        <Route path="/agents" element={<Protected adminOnly><Agents /></Protected>} />
-        <Route path="/agents/:id" element={<Protected adminOnly><AgentEditor /></Protected>} />
-        <Route path="/call-logs" element={<Protected adminOnly><CallLogsPage /></Protected>} />
-        <Route path="/users" element={<Protected adminOnly><Users /></Protected>} />
-        <Route path="/audit" element={<Protected adminOnly><AuditLog /></Protected>} />
+        <Route path="/contacts" element={<Protected adminOnly page="contacts"><Contacts /></Protected>} />
+        <Route path="/campaigns" element={<Protected adminOnly page="campaigns"><Campaigns /></Protected>} />
+        <Route path="/campaigns/new" element={<Protected adminOnly page="campaigns"><CreateCampaign /></Protected>} />
+        <Route path="/campaigns/:id" element={<Protected adminOnly page="campaigns"><CampaignDetail /></Protected>} />
+        <Route path="/scheduler" element={<Protected adminOnly page="scheduler"><Scheduler /></Protected>} />
+        <Route path="/routing" element={<Protected adminOnly page="routing"><Routing /></Protected>} />
+        <Route path="/agents" element={<Protected adminOnly page="agents"><Agents /></Protected>} />
+        <Route path="/agents/:id" element={<Protected adminOnly page="agents"><AgentEditor /></Protected>} />
+        <Route path="/call-logs" element={<Protected adminOnly page="call-logs"><CallLogsPage /></Protected>} />
+        <Route path="/users" element={<Protected adminOnly page="users"><Users /></Protected>} />
+        <Route path="/audit" element={<Protected adminOnly page="audit"><AuditLog /></Protected>} />
         <Route path="/profile" element={<Profile />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

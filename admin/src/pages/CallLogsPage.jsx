@@ -47,7 +47,7 @@ export default function CallLogsPage() {
       <PageHeader title="Call logs" sub="Every call the helpline answered or placed, with its transcript, recording and tickets" />
       <div className="toolbar">
         <div className="search"><span className="ic"><IconSearch /></span>
-          <input placeholder="Phone, ticket no, call id…" value={q} onChange={(e) => { setPage(0); setQ(e.target.value) }} /></div>
+          <input placeholder="Name, phone, ticket no, call id…" value={q} onChange={(e) => { setPage(0); setQ(e.target.value) }} /></div>
         <select value={source} onChange={(e) => { setPage(0); setSource(e.target.value) }}>
           <option value="">All sources</option>
           {Object.entries(SOURCE_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
@@ -65,29 +65,32 @@ export default function CallLogsPage() {
       {err && <div className="err">{err}</div>}
 
       <div className="table-wrap tall" style={refreshingStyle(loading)}>
-        <table>
+        <table className="cards">
           <thead><tr>
-            <th className="no-sort">Started</th><th className="no-sort">Source</th><th className="no-sort">Number</th>
+            <th className="no-sort">Started</th><th className="no-sort">Source</th><th className="no-sort">Caller</th>
             <th className="no-sort num">Duration</th><th className="no-sort">Language</th><th className="no-sort">Status</th>
-            <th className="no-sort">Ticket / outcome</th><th className="no-sort num">Cost</th>
+            <th className="no-sort">Ticket / outcome</th>
           </tr></thead>
           <tbody>
-            {loading && !items.length ? <tr><td colSpan={8} className="empty">Loading…</td></tr>
-              : !items.length ? <tr><td colSpan={8} className="empty">No calls yet.</td></tr>
+            {loading && !items.length ? <tr><td colSpan={7} className="empty">Loading…</td></tr>
+              : !items.length ? <tr><td colSpan={7} className="empty">No calls yet.</td></tr>
               : items.map((c) => (
                 <tr key={c.id} className="clickable" onClick={() => open(c)}>
-                  <td>{fmtDate(c.started_at)}</td>
-                  <td><span className="pill src">{SOURCE_LABEL[c.source] || c.source}</span></td>
-                  <td>{c.caller || '—'}{c.has_recording && <span title="Recording available" style={{ marginLeft: 6 }}>🔊</span>}</td>
-                  <td className="num">{fmtDur(c.duration_seconds)}</td>
-                  <td>{LANG_NAME[c.language] || c.language || '—'}</td>
-                  <td><span className={`pill ${c.status === 'completed' ? 'green' : c.status === 'in_progress' ? 'blue' : 'amber'}`}>{c.status}</span></td>
-                  <td onClick={(e) => e.stopPropagation()}>
+                  <td data-label="Started">{fmtDate(c.started_at)}</td>
+                  <td data-label="Source"><span className="pill src">{SOURCE_LABEL[c.source] || c.source}</span></td>
+                  <td data-label="Caller">
+                    {c.caller_name || <span className="muted">Name not given</span>}
+                    {c.has_recording && <span title="Recording available" style={{ marginLeft: 6 }}>🔊</span>}
+                    <div className="muted" style={{ fontSize: '0.72rem', fontFamily: 'var(--mono)' }}>{c.caller || '—'}</div>
+                  </td>
+                  <td data-label="Duration" className="num">{fmtDur(c.duration_seconds)}</td>
+                  <td data-label="Language">{LANG_NAME[c.language] || c.language || '—'}</td>
+                  <td data-label="Status"><span className={`pill ${c.status === 'completed' ? 'green' : c.status === 'in_progress' ? 'blue' : 'amber'}`}>{c.status}</span></td>
+                  <td data-label="Ticket" onClick={(e) => e.stopPropagation()}>
                     {c.ticket_id ? <Link to={`/tickets/${c.ticket_id}`} style={{ fontFamily: 'var(--mono)', color: 'var(--green-2)' }}>{c.ticket_id}</Link>
                       : c.outcome ? <span className="muted">{c.outcome}{c.campaign_id ? <Link to={`/campaigns/${c.campaign_id}`} style={{ marginLeft: 6 }}>campaign</Link> : null}</span>
                       : c.lookup_ticket_ids?.length ? <span className="muted" title="Status inquiry">looked up {c.lookup_ticket_ids.join(', ')}</span> : <span className="muted">—</span>}
                   </td>
-                  <td className="num">{c.gemini_cost_usd != null ? `$${Number(c.gemini_cost_usd).toFixed(4)}` : '—'}</td>
                 </tr>
               ))}
           </tbody>

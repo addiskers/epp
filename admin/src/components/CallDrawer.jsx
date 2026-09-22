@@ -1,8 +1,10 @@
 import { Link } from 'react-router-dom'
-import { audioUrl, fmtDate, fmtDur, LANG_NAME } from '../api.js'
+import { audioUrl, cap, fmtDate, fmtDur, LANG_NAME } from '../api.js'
 import { IconPhone } from './icons.jsx'
 import { PriorityPill, StatusPill } from './Pills.jsx'
 import Transcript from './Transcript.jsx'
+
+export const MOOD_HELP = 'How the caller sounded on the call, judged by the AI from the transcript: Positive, Neutral or Negative.'
 
 // One call, in a modal: linked tickets, post-call analysis, recording, transcript.
 // `call` may carry `_loading` while the full record is still being fetched.
@@ -12,7 +14,7 @@ export default function CallDrawer({ call, onClose }) {
     <div className="backdrop" onClick={onClose}>
       <div className="modal" style={{ maxWidth: 620, maxHeight: '85vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
         <div className="row-between">
-          <h3 style={{ display: 'flex', gap: 8, alignItems: 'center' }}><IconPhone /> {call.caller || 'Call'}</h3>
+          <h3 style={{ display: 'flex', gap: 8, alignItems: 'center' }}><IconPhone /> {call.caller_name ? `${call.caller_name} · ` : ''}{call.caller || 'Call'}</h3>
           <button className="btn ghost sm" onClick={onClose}>Close</button>
         </div>
         <div className="sub">
@@ -67,7 +69,8 @@ export default function CallDrawer({ call, onClose }) {
               <>
                 <div style={{ fontSize: '0.84rem' }}>{call.analysis.summary}</div>
                 <div className="muted" style={{ fontSize: '0.76rem', marginTop: 4 }}>
-                  {call.analysis.intent} · sentiment {call.analysis.sentiment_label} ({call.analysis.sentiment_score})
+                  {call.analysis.intent}
+                  {call.analysis.sentiment_label && <> · <span title={MOOD_HELP}>Caller mood: {cap(call.analysis.sentiment_label)}</span></>}
                   {call.analysis.is_status_inquiry ? ' · status inquiry' : ''}
                 </div>
               </>

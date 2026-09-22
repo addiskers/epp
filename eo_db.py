@@ -622,6 +622,10 @@ def list_users() -> list[dict]:
         "ORDER BY u.created_at DESC")
 
 
+def set_user_name(user_id: int, name: str) -> None:
+    _exec("UPDATE users SET name = ?, updated_at = ? WHERE id = ?", (str(name or "").strip(), _now(), int(user_id)))
+
+
 def set_user_active(user_id: int, active: bool) -> None:
     _exec("UPDATE users SET active = ?, updated_at = ? WHERE id = ?", (1 if active else 0, _now(), user_id))
 

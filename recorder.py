@@ -81,7 +81,8 @@ class CallRecorder:
 
     # Lifecycle
 
-    async def open(self, source, call_sid=None, caller=None, campaign_id=None, campaign_contact_id=None):
+    async def open(self, source, call_sid=None, caller=None, campaign_id=None, campaign_contact_id=None,
+                   caller_name=None):
         try:
             call_id = uuid.uuid4().hex[:16]
             if not call_sid:
@@ -99,6 +100,7 @@ class CallRecorder:
                 "call_sid": call_sid,
                 "source": source,                 # 'plivo_inbound' | 'plivo_campaign' | 'plivo' | 'browser'
                 "caller": caller,
+                "caller_name": str(caller_name or "").strip(),   # known caller, else what create_ticket hears
                 "started_at": self._started_ts.isoformat(),
                 "ended_at": None,
                 "duration_seconds": 0,
@@ -253,6 +255,13 @@ class CallRecorder:
             lang = languages.normalize(args.get("language"))
             if lang:
                 self.call["ticket_language"] = lang
+            name_given = str(args.get("caller_name") or "").strip()
+            if name_given and name_given.lower() != "not given":
+                self.call["caller_name"] = name_given
+        elif name == "update_ticket" and isinstance(result, dict) and result.get("ok"):
+            name_given = str(args.get("caller_name") or "").strip()
+            if name_given:
+                self.call["caller_name"] = name_given
         elif name == "lookup_ticket" and isinstance(result, dict) and result.get("found"):
             tid = result.get("ticket_id")
             ids = self.call.get("lookup_ticket_ids") or []

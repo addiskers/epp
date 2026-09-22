@@ -306,12 +306,12 @@ async def _prewarm_gemini(call_uuid: str, ctx=None):
 
 
 def _remember_call_meta(call_uuid, caller, direction="", trigger="", context=None,
-                        campaign_id=None, campaign_contact_id=None):
+                        campaign_id=None, campaign_contact_id=None, caller_name=""):
     if not call_uuid:
         return
     _pending_call_meta[call_uuid] = {
-        "caller": caller or "", "direction": direction or "", "trigger": trigger or "",
-        "ctx": context or {}, "answered_at": time.monotonic(),
+        "caller": caller or "", "caller_name": caller_name or "", "direction": direction or "",
+        "trigger": trigger or "", "ctx": context or {}, "answered_at": time.monotonic(),
         "campaign_id": campaign_id, "campaign_contact_id": campaign_contact_id,
     }
     if len(_pending_call_meta) > 200:
@@ -349,6 +349,11 @@ async def _lifespan(app: FastAPI):
         eo_auth.seed_admin()
     except Exception as e:
         logger.error(f"Database init failed: {e}")
+    try:
+        await store.backfill_caller_names(
+            lambda cid: next((t.get("caller_name") for t in eo_db.tickets_by_call(cid) if t.get("caller_name")), ""))
+    except Exception as e:
+        logger.warning(f"caller_name backfill skipped: {e}")
     logger.info("EPP helpline ready: model=%s languages=%s plivo=%s public_url=%s",
                 MODEL, ",".join(languages.enabled_codes()),
                 "ready" if os.getenv("PLIVO_AUTH_ID") and os.getenv("PLIVO_FROM_NUMBER") else "NOT configured",
@@ -634,8 +639,10 @@ async def plivo_answer(request: Request):
     if call_ctx.get("missing"):
         logger.warning("Call %s: prompt has unresolved placeholders %s", call_uuid or "-", call_ctx["missing"])
 
+    known_name = (call_ctx.get("known_caller") or {}).get("name") or call_ctx.get("caller_name") or ""
     _remember_call_meta(call_uuid, caller, direction=direction, trigger=call_ctx.get("trigger") or "",
-                        context=call_ctx, campaign_id=campaign_id, campaign_contact_id=cc_id)
+                        context=call_ctx, campaign_id=campaign_id, campaign_contact_id=cc_id,
+                        caller_name=known_name)
     if call_uuid:
         # The media stream finds THIS call's context by this id; without it the session
         # falls back to the identity-free "systems are down" prompt.
@@ -690,7 +697,8 @@ async def plivo_media_stream(websocket: WebSocket):
             caller = m.get("caller") or event.get("caller") or ""
             await recorder.open(source=source, call_sid=event.get("call_sid") or None, caller=caller,
                                 campaign_id=m.get("campaign_id") or meta.get("campaign_id"),
-                                campaign_contact_id=m.get("campaign_contact_id") or meta.get("campaign_contact_id"))
+                                campaign_contact_id=m.get("campaign_contact_id") or meta.get("campaign_contact_id"),
+                                caller_name=m.get("caller_name") or meta.get("caller_name") or "")
             sid = event.get("call_sid") or ""
             if sid:
                 _active_calls[sid] = {"caller": caller, "started_at": time.time(),

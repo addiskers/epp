@@ -446,9 +446,8 @@ def _actor(user):
             "actor_name": user.get("name") or user.get("username") or ""}
 
 
-def change_status(ticket: dict, new_status: str, user=None, note="") -> dict:
-    new_status = str(new_status or "").strip().lower()
-    cur = ticket.get("status") or "open"
+def _validate_transition(cur: str, new_status: str, user=None) -> None:
+    """Raise TicketError unless `cur` → `new_status` is a move this user may make."""
     if new_status not in STATUSES:
         raise TicketError(f"Unknown status '{new_status}'")
     if new_status == cur:
@@ -457,6 +456,12 @@ def change_status(ticket: dict, new_status: str, user=None, note="") -> dict:
         raise TicketError(f"Cannot move a ticket from {STATUS_LABEL[cur]} to {STATUS_LABEL[new_status]}")
     if (cur, new_status) in _REOPEN and (user or {}).get("role") != "admin":
         raise TicketError("Only an admin can reopen a resolved or closed ticket")
+
+
+def change_status(ticket: dict, new_status: str, user=None, note="") -> dict:
+    new_status = str(new_status or "").strip().lower()
+    cur = ticket.get("status") or "open"
+    _validate_transition(cur, new_status, user)
     fields = {"status": new_status}
     now = _now_iso()
     if new_status == "resolved":
@@ -558,6 +563,94 @@ def reclassify(ticket: dict, category_name: str, user=None, note="") -> dict:
                                to_value=cat.get("department_name") or "",
                                note=f"re-routed by category '{cat['name']}'", **_actor(user))
     return eo_db.get_ticket(ticket["ticket_id"])
+
+
+EDIT_KEYS = ("category", "department_id", "user_id", "priority", "status", "note")
+_UNSET = object()
+
+
+def apply_edit(ticket: dict, changes: dict, user=None) -> dict:
+    """One Save from the ticket page: category, department, assignee, priority, status and a
+    note in a single request. EVERYTHING is validated before anything is written, so a bad
+    field means no change at all. Each applied field writes the same ticket_events as the
+    single-field routes; the note rides on the status change when there is one, otherwise on
+    the last applied change, otherwise it becomes a note of its own. Raises TicketError."""
+    changes = {k: v for k, v in (changes or {}).items() if k in EDIT_KEYS}
+    is_admin = (user or {}).get("role") == "admin"
+    note = str(changes.get("note") or "").strip()
+    if len(note) > 2000:
+        raise TicketError("Note is too long (max 2000 characters)")
+
+    # --- validate
+    cat_name = None
+    if changes.get("category") not in (None, ""):
+        if not is_admin:
+            raise TicketError("Only an admin can change the category")
+        wanted = str(changes["category"]).strip()
+        cat = routing.resolve_category(ticket.get("caller_type"), wanted, eo_db.list_categories(active_only=True))
+        if not cat or (cat["name"] == "Other" and wanted.lower() != "other"):
+            raise TicketError("Category not found for this caller type")
+        if cat["name"] != (ticket.get("category") or ""):
+            cat_name = cat["name"]
+    dep = _UNSET
+    if "department_id" in changes:
+        d = changes["department_id"]
+        if d in (None, ""):
+            dep = ""
+        else:
+            if not is_admin:
+                raise TicketError("Only an admin can move a ticket to another department")
+            if not eo_db.get_department(d):
+                raise TicketError("Department not found")
+            dep = int(d)
+        if (dep or None) == ticket.get("assigned_department_id"):
+            dep = _UNSET
+    uid = _UNSET
+    if "user_id" in changes:
+        u = changes["user_id"]
+        if u in (None, ""):
+            uid = ""
+        else:
+            if not eo_db.get_user(int(u)):
+                raise TicketError("User not found")
+            uid = int(u)
+        if (uid or None) == ticket.get("assigned_user_id"):
+            uid = _UNSET
+    priority = None
+    if changes.get("priority") not in (None, ""):
+        p = str(changes["priority"]).strip().lower()
+        if p not in eo_db.PRIORITIES:
+            raise TicketError("Priority must be high, medium or low")
+        if p != (ticket.get("priority") or "medium"):
+            priority = p
+    status = None
+    if changes.get("status") not in (None, ""):
+        s = str(changes["status"]).strip().lower()
+        cur = ticket.get("status") or "open"
+        if s != cur:
+            _validate_transition(cur, s, user)
+            status = s
+    assigning = dep is not _UNSET or uid is not _UNSET
+    steps = [k for k, on in (("category", cat_name), ("assign", assigning), ("priority", priority),
+                             ("status", status)) if on]
+    if not steps and not note:
+        raise TicketError("Nothing to save")
+    note_on = "status" if status else (steps[-1] if steps else "note")
+
+    # --- apply, in a fixed order, each step reading the ticket the previous one left
+    t = ticket
+    if cat_name:
+        t = reclassify(t, cat_name, user, note if note_on == "category" else "")
+    if assigning:
+        t = assign(t, department_id=(None if dep is _UNSET else dep), user_id=(None if uid is _UNSET else uid),
+                   user=user, note=note if note_on == "assign" else "")
+    if priority:
+        t = set_priority(t, priority, user, note if note_on == "priority" else "")
+    if status:
+        t = change_status(t, status, user, note if note_on == "status" else "")
+    if note_on == "note":
+        t = add_note(t, note, user)
+    return t
 
 
 # ---------------------------------------------------------------------------------------

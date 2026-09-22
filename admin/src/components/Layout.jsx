@@ -5,17 +5,18 @@ import {
   IconContacts, IconCampaigns, IconClock,
 } from './icons.jsx'
 
+// `page` is the key EPP_HIDDEN_PAGES uses to take an entry off the menu.
 const ADMIN_NAV = [
   { to: '/', label: 'Dashboard', icon: IconDashboard, end: true },
   { to: '/tickets', label: 'Tickets', icon: IconTicket },
-  { to: '/campaigns', label: 'Campaigns', icon: IconCampaigns },
-  { to: '/contacts', label: 'Contacts', icon: IconContacts },
-  { to: '/scheduler', label: 'Scheduler', icon: IconClock },
-  { to: '/routing', label: 'Routing', icon: IconRouting },
-  { to: '/agents', label: 'Agent', icon: IconAgent },
-  { to: '/call-logs', label: 'Call Logs', icon: IconLogs },
-  { to: '/users', label: 'Users', icon: IconUsers },
-  { to: '/audit', label: 'Audit Log', icon: IconAudit },
+  { to: '/campaigns', label: 'Campaigns', icon: IconCampaigns, page: 'campaigns' },
+  { to: '/contacts', label: 'Contacts', icon: IconContacts, page: 'contacts' },
+  { to: '/scheduler', label: 'Scheduler', icon: IconClock, page: 'scheduler' },
+  { to: '/routing', label: 'Departments & Routing', icon: IconRouting, page: 'routing' },
+  { to: '/agents', label: 'Agent', icon: IconAgent, page: 'agents' },
+  { to: '/call-logs', label: 'Call Logs', icon: IconLogs, page: 'call-logs' },
+  { to: '/users', label: 'Users', icon: IconUsers, page: 'users' },
+  { to: '/audit', label: 'Audit Log', icon: IconAudit, page: 'audit' },
 ]
 
 const DEPT_NAV = [
@@ -31,9 +32,9 @@ function initials(name, username) {
 }
 
 export default function Layout() {
-  const { user, isAdmin, logout } = useAuth()
+  const { user, isAdmin, logout, isHidden } = useAuth()
   const navigate = useNavigate()
-  const nav = isAdmin ? ADMIN_NAV : DEPT_NAV
+  const nav = (isAdmin ? ADMIN_NAV : DEPT_NAV).filter((n) => !isHidden(n.page))
 
   function doLogout() {
     logout()

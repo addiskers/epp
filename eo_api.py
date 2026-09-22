@@ -91,6 +91,22 @@ def _user_public(user):
             "department_name": (dep or {}).get("name")}
 
 
+# Admin pages the operator can take off the menu without a rebuild: EPP_HIDDEN_PAGES is a
+# comma-separated list of these keys (blank = show everything). The routes stay wired, so
+# turning a page back on is an .env edit and a restart.
+UI_PAGES = ("campaigns", "contacts", "scheduler", "routing", "agents", "call-logs", "users", "audit",
+            "subscription")
+_DEFAULT_HIDDEN_PAGES = "campaigns,contacts,scheduler"
+
+
+def ui_config() -> dict:
+    raw = os.getenv("EPP_HIDDEN_PAGES")
+    if raw is None:
+        raw = _DEFAULT_HIDDEN_PAGES
+    wanted = [p.strip().lower() for p in raw.split(",") if p.strip()]
+    return {"hidden_pages": [p for p in UI_PAGES if p in wanted]}
+
+
 # ---------------------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------------------
@@ -103,7 +119,7 @@ async def login(request: Request):
         audit.log("login_failed", user={"username": username}, request=request)
         raise HTTPException(status_code=401, detail="Invalid username or password")
     audit.log("login", user=user, request=request)
-    return {"ok": True, "token": eo_auth.issue_token(user), "user": _user_public(user)}
+    return {"ok": True, "token": eo_auth.issue_token(user), "user": _user_public(user), "ui": ui_config()}
 
 
 @router.post("/logout")
@@ -119,7 +135,7 @@ async def logout(request: Request):
 @router.get("/me")
 async def me(request: Request):
     user = eo_auth.require_user(request)
-    return {"ok": True, "user": _user_public(user)}
+    return {"ok": True, "user": _user_public(user), "ui": ui_config()}
 
 
 @router.post("/me/password")
@@ -173,37 +189,56 @@ async def users_create(request: Request):
 
 @router.patch("/users/{user_id}")
 async def users_update(user_id: int, request: Request):
+    """Edit a user (the Users page's Save). Every field is checked before any is written, so a
+    bad department never leaves a half-applied role or status behind."""
     admin = eo_auth.require_admin(request)
-    if not eo_db.get_user(user_id):
+    target = eo_db.get_user(user_id)
+    if not target:
         raise HTTPException(status_code=404, detail="User not found")
     body = await _body(request)
     changes = {}
+    if "name" in body:
+        changes["name"] = _clean_str(body, "name", max_len=120)
     if "active" in body:
         if int(user_id) == int(admin["id"]) and not body["active"]:
             raise HTTPException(status_code=400, detail="You cannot disable your own account")
-        eo_db.set_user_active(int(user_id), bool(body["active"]))
         changes["active"] = bool(body["active"])
+    role = target["role"]
     if "role" in body:
         if body["role"] not in eo_db.ROLES:
             raise HTTPException(status_code=400, detail="Role must be admin or dept_user")
         if int(user_id) == int(admin["id"]) and body["role"] != "admin":
             raise HTTPException(status_code=400, detail="You cannot demote your own account")
-        eo_db.set_user_role(int(user_id), body["role"])
-        changes["role"] = body["role"]
+        changes["role"] = role = body["role"]
+    dep = target.get("department_id")
     if "department_id" in body:
         dep = body.get("department_id") or None
         if dep and not eo_db.get_department(dep):
             raise HTTPException(status_code=400, detail="Department not found")
-        eo_db.set_user_department(int(user_id), dep)
         changes["department_id"] = dep
-    if body.get("password"):
-        if len(body["password"]) < 8:
+    if role == "dept_user" and not dep:
+        raise HTTPException(status_code=400, detail="A department user needs a department")
+    password = body.get("password") or ""
+    if password:
+        if len(password) < 8:
             raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
-        h, s = eo_auth.hash_password(body["password"])
+    if not changes and not password:
+        return {"ok": True, "user": eo_db.get_user(user_id)}
+
+    if "name" in changes:
+        eo_db.set_user_name(int(user_id), changes["name"])
+    if "active" in changes:
+        eo_db.set_user_active(int(user_id), changes["active"])
+    if "role" in changes:
+        eo_db.set_user_role(int(user_id), changes["role"])
+    if "department_id" in changes:
+        eo_db.set_user_department(int(user_id), changes["department_id"])
+    if password:
+        h, s = eo_auth.hash_password(password)
         eo_db.update_user_password(int(user_id), h, s)
         changes["password"] = "reset"
     audit.log("user_updated", user=admin, target=f"user:{user_id}", detail=changes, request=request)
-    return {"ok": True}
+    return {"ok": True, "user": eo_db.get_user(user_id)}
 
 
 # ---------------------------------------------------------------------------------------
@@ -503,6 +538,25 @@ async def ticket_priority(ticket_id: str, request: Request):
                             "ticket_priority", request, {"priority": pr})
 
 
+@router.post("/tickets/{ticket_id}/update")
+async def ticket_update(ticket_id: str, request: Request):
+    """The ticket page's single Save: any of category / department_id / user_id / priority /
+    status / note in one request, all-or-nothing."""
+    user = eo_auth.require_user(request)
+    body = await _body(request)
+    changes = {k: body[k] for k in tickets.EDIT_KEYS if k in body}
+    for key in ("department_id", "user_id"):
+        if changes.get(key) not in (None, ""):
+            changes[key] = _whole_int(changes[key], key, 1, 10 ** 9)
+    if "note" in changes:
+        changes["note"] = _clean_str(body, "note", max_len=2000)
+    detail = {k: v for k, v in changes.items() if k != "note"}
+    if changes.get("note"):
+        detail["note_chars"] = len(changes["note"])
+    return _run_ticket_edit(user, ticket_id, lambda t: tickets.apply_edit(t, changes, user),
+                            "ticket_updated", request, detail)
+
+
 @router.post("/tickets/{ticket_id}/reclassify")
 async def ticket_reclassify(ticket_id: str, request: Request):
     user = eo_auth.require_admin(request)
@@ -553,6 +607,9 @@ async def summary(request: Request):
     out["tickets"]["recent_escalated"] = [_decorate(t) for t in out["tickets"]["recent_escalated"]]
     if eo_auth.is_admin(user):
         calls = await store.summary({})
+        # Model cost is ours, not the client's: the Subscription page shows minutes and ₹.
+        calls = {k: v for k, v in calls.items() if k not in ("total_cost_usd", "avg_cost_per_call")}
+        calls["by_day"] = [{k: v for k, v in d.items() if k != "cost_usd"} for d in calls.get("by_day") or []]
         out["calls"] = calls
         out["live_calls"] = _active_calls()
         out["gemini_status"] = _gemini_status()
@@ -577,7 +634,14 @@ async def live_token(request: Request):
 # ---------------------------------------------------------------------------------------
 # Call logs (admin)
 # ---------------------------------------------------------------------------------------
+# Model cost and token counts stay on the record for us; the client UI never sees them.
 _CALL_COST_KEYS = {"gemini_cost_usd", "tokens", "gemini_model"}
+
+
+def _strip_cost(call: dict) -> dict:
+    for key in _CALL_COST_KEYS:
+        call.pop(key, None)
+    return call
 
 
 def _call_filters(request: Request) -> dict:
@@ -598,7 +662,9 @@ async def calls_list(request: Request):
         filters["limit"] = 100
     data = await store.list_calls(filters)
     for c in data["items"]:
+        _strip_cost(c)
         c["has_recording"] = store.has_recording(c.get("call_sid"))
+        c.setdefault("caller_name", "")
     return JSONResponse(data)
 
 
@@ -608,10 +674,12 @@ async def call_detail(call_id: str, request: Request):
     call = await store.load_call(call_id)
     if not call:
         raise HTTPException(status_code=404, detail="Call not found")
-    call = dict(call)
+    call = _strip_cost(dict(call))
     call.setdefault("messages", call.get("transcript") or [])
     call["has_recording"] = store.has_recording(call.get("call_sid"))
     call["tickets"] = [_decorate(t) for t in eo_db.tickets_by_call(call_id)]
+    if not call.get("caller_name"):
+        call["caller_name"] = next((t.get("caller_name") for t in call["tickets"] if t.get("caller_name")), "")
     audit.log("transcript_viewed", user=user, target=f"call:{call_id}", request=request)
     return JSONResponse(call)
 
