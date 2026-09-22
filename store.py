@@ -146,6 +146,12 @@ async def load_call(call_id):
     return await _run(_load_sync, call_id)
 
 
+def call_metas():
+    """A snapshot of every call's lightweight record (sync; the index lives in memory)."""
+    with _LOCK:
+        return [dict(m) for m in _INDEX.values()]
+
+
 def _date_of(meta):
     s = meta.get("started_at") or ""
     return s[:10]

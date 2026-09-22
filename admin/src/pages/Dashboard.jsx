@@ -39,7 +39,7 @@ export default function Dashboard() {
       <div className="grid stat-grid">
         <Stat label="Open tickets" value={t?.open} sub={`${t?.total ?? '—'} total`} />
         <Stat label="High priority open" value={t?.high_open} sub="flagged for escalation" color={t?.high_open ? 'var(--red)' : undefined} />
-        <Stat label="Registered today" value={t?.today} sub="since midnight UTC" />
+        <Stat label="Registered today" value={t?.today} sub="since midnight, India time" />
         {isAdmin && <Stat label="Avg call" value={calls ? fmtDur(calls.avg_duration_seconds) : '—'}
                           sub={`${calls?.total_calls ?? 0} calls · ${Math.round((calls?.ticket_rate || 0) * 100)}% produced a ticket`} />}
       </div>

@@ -289,6 +289,7 @@ def init() -> None:
         conn.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
         conn.commit()
     _seed_departments()
+    _warn_department_typos()
     _seed_categories()
     _seed_agents()
     # An operator's OWN edits are never overwritten (see _seed_agents), so a redeploy can leave
@@ -391,6 +392,45 @@ def _seed_departments() -> None:
             conn.execute("INSERT INTO departments (name, code, active, sort_order, created_at, updated_at) "
                          "VALUES (?,?,1,?,?,?)", (name, code, order, now, now))
         conn.commit()
+
+
+def _edit_distance(a: str, b: str) -> int:
+    """Levenshtein, small strings only (department names)."""
+    if a == b:
+        return 0
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def department_typos() -> list:
+    """[(department row, seeded name it nearly matches)] — a name typed by hand that is a
+    near-miss of a shipped one ("Maintainance") stays forever, since seeding never renames."""
+    import epp_seeds
+    seeded = [name for _, name in epp_seeds.DEPARTMENTS]
+    out = []
+    for d in list_departments(active_only=False):
+        name = (d.get("name") or "").strip()
+        if not name or name in seeded:
+            continue
+        for s in seeded:
+            if abs(len(name) - len(s)) <= 2 and _edit_distance(name.lower(), s.lower()) <= 2:
+                out.append((d, s))
+                break
+    return out
+
+
+def _warn_department_typos() -> None:
+    try:
+        for d, s in department_typos():
+            logger.warning("Department #%s is named '%s' — did you mean '%s'? Rename it on the "
+                           "Departments & Routing page (the name box, then Save changes).", d.get("id"), d.get("name"), s)
+    except Exception:
+        logger.debug("department typo check failed", exc_info=True)
 
 
 def _seed_categories() -> None:
@@ -963,13 +1003,16 @@ def ticket_stats(scope_department_id=None, days=7) -> dict:
         f"{wsql.replace('assigned_department_id', 't.assigned_department_id')} GROUP BY k ORDER BY n DESC",
         tuple(params))
     open_statuses = "('open','under_review','escalated')"
-    today = datetime.now(timezone.utc).date().isoformat()
+    # "Today" is the helpline's day (India), not the server's: created_at is stored in UTC, so
+    # count from midnight IST expressed in UTC. ISO strings in one offset compare in order.
+    from zoneinfo import ZoneInfo
+    ist_midnight = datetime.now(ZoneInfo("Asia/Kolkata")).replace(hour=0, minute=0, second=0, microsecond=0)
+    since = ist_midnight.astimezone(timezone.utc).isoformat()
     tot = _one(f"SELECT COUNT(*) c FROM tickets {wsql}", tuple(params))["c"]
     open_n = _one(f"SELECT COUNT(*) c FROM tickets WHERE status IN {open_statuses}{andsql}", tuple(params))["c"]
     high_open = _one(f"SELECT COUNT(*) c FROM tickets WHERE status IN {open_statuses} AND priority = 'high'{andsql}",
                      tuple(params))["c"]
-    today_n = _one(f"SELECT COUNT(*) c FROM tickets WHERE substr(created_at,1,10) = ?{andsql}",
-                   (today, *params))["c"]
+    today_n = _one(f"SELECT COUNT(*) c FROM tickets WHERE created_at >= ?{andsql}", (since, *params))["c"]
     by_day = _rows(
         f"SELECT substr(created_at,1,10) AS d, COUNT(*) n FROM tickets "
         f"WHERE created_at >= date('now', ?){andsql} GROUP BY d ORDER BY d",

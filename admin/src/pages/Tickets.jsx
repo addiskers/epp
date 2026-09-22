@@ -100,7 +100,7 @@ export default function Tickets() {
       {err && <div className="err">{err}</div>}
 
       <div className="table-wrap tall" style={refreshingStyle(loading)}>
-        <table>
+        <table className="cards">
           <thead>
             <tr>
               {th('ticket_id', 'Ticket')}
@@ -121,16 +121,16 @@ export default function Tickets() {
               : items.map((t) => (
                 <tr key={t.ticket_id} className="clickable" title="Open this ticket"
                     onClick={() => navigate(`/tickets/${t.ticket_id}`)}>
-                  <td onClick={(e) => e.stopPropagation()}><Link to={`/tickets/${t.ticket_id}`} style={{ fontFamily: 'var(--mono)', fontWeight: 600, color: 'var(--green-2)' }}>{t.ticket_id}</Link></td>
-                  <td>{fmtDate(t.created_at)}</td>
-                  <td><TypePill type={t.caller_type} /></td>
-                  <td>{t.caller_name || <span className="muted">—</span>}<div className="muted" style={{ fontSize: '0.72rem' }}>{t.contact_number}</div></td>
-                  <td>{t.category}{t.subcategory && <div className="muted" style={{ fontSize: '0.72rem' }}>{t.subcategory}</div>}</td>
-                  <td>{t.assigned_department || <span className="muted">Unassigned</span>}</td>
-                  <td><PriorityPill priority={t.priority} escalated={t.escalation_flag} /></td>
-                  <td><StatusPill status={t.status} /></td>
-                  <td>{LANG_NAME[t.language] || t.language || '—'}</td>
-                  <td className="muted" style={{ maxWidth: 320, fontSize: '0.78rem' }} title={t.ai_summary || t.description}>
+                  <td data-label="Ticket" onClick={(e) => e.stopPropagation()}><Link to={`/tickets/${t.ticket_id}`} style={{ fontFamily: 'var(--mono)', fontWeight: 600, color: 'var(--green-2)' }}>{t.ticket_id}</Link></td>
+                  <td data-label="Registered">{fmtDate(t.created_at)}</td>
+                  <td data-label="Type"><TypePill type={t.caller_type} /></td>
+                  <td data-label="Caller">{t.caller_name || <span className="muted">—</span>}<div className="muted" style={{ fontSize: '0.72rem' }}>{t.contact_number}</div></td>
+                  <td data-label="Category">{t.category}{t.subcategory && <div className="muted" style={{ fontSize: '0.72rem' }}>{t.subcategory}</div>}</td>
+                  <td data-label="Department">{t.assigned_department || <span className="muted">Unassigned</span>}</td>
+                  <td data-label="Priority"><PriorityPill priority={t.priority} escalated={t.escalation_flag} /></td>
+                  <td data-label="Status"><StatusPill status={t.status} /></td>
+                  <td data-label="Language">{LANG_NAME[t.language] || t.language || '—'}</td>
+                  <td data-label="Summary" className="muted" style={{ maxWidth: 320, fontSize: '0.78rem' }} title={t.ai_summary || t.description}>
                     {(t.ai_summary || t.description || '').slice(0, 110)}{(t.ai_summary || t.description || '').length > 110 ? '…' : ''}
                   </td>
                 </tr>

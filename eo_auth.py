@@ -209,6 +209,24 @@ def is_admin(user: dict) -> bool:
     return (user or {}).get("role") == "admin"
 
 
+def superadmin_usernames() -> set:
+    """Usernames allowed to change the subscription plan (the service provider's people, listed
+    in EPP_SUPERADMIN_USERS). Blank = nobody: the client's admins only ever see it."""
+    raw = os.getenv("EPP_SUPERADMIN_USERS") or ""
+    return {u.strip().lower() for u in raw.split(",") if u.strip()}
+
+
+def is_superadmin(user: dict) -> bool:
+    return is_admin(user) and (user or {}).get("username", "").lower() in superadmin_usernames()
+
+
+def require_superadmin(request: Request) -> dict:
+    user = require_admin(request)
+    if not is_superadmin(user):
+        raise HTTPException(status_code=403, detail="Only the service provider can change the plan")
+    return user
+
+
 def scope_department(user: dict):
     """None for an admin (sees everything); the department id for a dept_user. A dept_user
     with no department sees nothing (-1 matches no row) rather than everything."""

@@ -116,11 +116,33 @@ method **GET**. Assign the app to the helpline number. Ring the number: the log 
 `https://epp.globalvoxinc.ai/admin` with `EPP_ADMIN_USER` / `EPP_ADMIN_PASS`. Change the
 password on Profile, then follow **First run** below.
 
+### 7. Their own domain (when the client shares it)
+
+The client's DNS: an **A record** for their host (say `helpline.client.com`) → the VM's static
+IP (`34.51.97.171` today; `gcloud compute addresses list` confirms). Then on the VM:
+
+```bash
+sudo tee /etc/caddy/Caddyfile >/dev/null <<'EOF'
+epp.globalvoxinc.ai, helpline.client.com {
+    reverse_proxy localhost:8000
+}
+EOF
+sudo systemctl reload caddy             # both hosts get certificates; both keep working
+sed -i 's#^PUBLIC_URL=.*#PUBLIC_URL=https://helpline.client.com#' ~/epp/.env
+cd ~/epp && docker compose up -d
+```
+
+Then in Plivo (Voice → Applications) change the Answer URL to
+`https://helpline.client.com/plivo/answer`. Check from your laptop:
+`curl -s https://helpline.client.com/healthz` and `curl -s https://helpline.client.com/plivo/answer | head -3`.
+
 ### Day-2
 
 | Task | Command |
 |---|---|
-| Update to the latest code | `cd ~/epp && git pull && docker compose up -d --build` — then check the log for `STALE AGENT PROMPT` and reset the script on the Agent page if it says so |
+| Update to the latest code | `cd ~/epp && git pull && docker compose up -d --build`. The shipped script applies itself on boot when nobody edited it (log: `shipped script updated`, the old text is kept in `agent_versions`). An edited script is left alone and logs `STALE AGENT PROMPT` if it is behind — reset it on the Agent page, which also switches it back to automatic updates. |
+| Hide or show admin pages | Edit `EPP_HIDDEN_PAGES` in `.env` (keys: campaigns, contacts, scheduler, routing, agents, call-logs, users, audit, subscription), then `docker compose up -d`. No rebuild. |
+| Set the client's plan | `EPP_PLAN_*` and `EPP_RATE_INR_PER_MIN` in `.env` (or override it on the Subscription page as a user listed in `EPP_SUPERADMIN_USERS`) |
 | Logs | `docker compose logs -f --tail=200` |
 | Restart | `docker compose restart` |
 | Backup | `docker compose exec epp-helpline tar czf - /var/epp-data > epp-backup-$(date +%F).tgz` |
@@ -221,7 +243,10 @@ Re-run `npm run build` after any SPA change — FastAPI serves the built `admin/
 | `EPP_COMPANY_NAME` / `EPP_HELPLINE_NAME` / `EPP_TICKET_PREFIX` | Spoken in the greeting and the ticket number. |
 | `EPP_ENABLED_LANGUAGES` | Switch off any language that fails the live-call check below. |
 | `MAX_LIVE_CALLS` | Simultaneous live calls, inbound **and** campaign together (default 10). Each is a Gemini session plus telephony. |
-| `EPP_CAMPAIGN_*` | Campaign pacing and retries; see `.env.example`. The Scheduler page's ON/OFF switch is the fastest way to stop all outbound dialing. |
+| `EPP_CAMPAIGN_*` | Campaign pacing and retries; see `.env.example`. The Scheduler page's ON/OFF switch is the fastest way to stop all outbound dialing (it survives restarts). |
+| `EPP_HIDDEN_PAGES` | Admin pages off the menu and unreachable by URL. Default `campaigns,contacts,scheduler`; blank shows everything. |
+| `EPP_PLAN_NAME` / `EPP_PLAN_MINUTES` / `EPP_PLAN_START` / `EPP_PLAN_END` / `EPP_LICENCE_VALID_TILL` / `EPP_RATE_INR_PER_MIN` | The Subscription page: what the client bought. Minutes count per phone call rounded up, inside the period (IST dates). |
+| `EPP_SUPERADMIN_USERS` | Usernames that may override the plan from the page. Blank = read-only for everyone. |
 | `DATA_DIR` | Leave blank under compose — it sets `/var/epp-data` (the persistent volume). |
 
 ---
@@ -332,6 +357,18 @@ which, in an amber banner.
 
 **The agent hung up while the caller was writing the number down** — raise
 `EO_POST_RSVP_IDLE_SECONDS` (default 20).
+
+**A department name is misspelled ("Maintainance")** — it was typed on the server; the code
+ships "Maintenance" and seeding never renames a row. Boot logs `did you mean 'Maintenance'?`
+naming the row; fix it on Departments & Routing (edit the name box, Save changes). To look
+first: `docker compose exec epp-helpline sqlite3 /var/epp-data/epp.db "select id,name,code from departments"`.
+
+**The phone still says the old greeting after a deploy** — the boot log tells you which case
+you are in. `shipped script updated` / `shipped script applied`: fixed, the next call has the
+new text. `customised script kept as is`: someone edited the script before this build, so it is
+frozen — open the Agent page and click Reset to shipped script (your edits are in
+`agent_versions`, reason `reset`). `STALE AGENT PROMPT`: an edited script is missing a fix; same
+remedy.
 
 **A campaign is live but nobody is being called** — in order: the Scheduler switch is OFF;
 it is outside the campaign's calling hours; `MAX_LIVE_CALLS` is used up by inbound calls;

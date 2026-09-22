@@ -30,6 +30,7 @@ import languages
 import prompt_render
 import routing
 import store
+import subscription
 import tickets
 
 logger = logging.getLogger(__name__)
@@ -629,6 +630,35 @@ def _gemini_status():
 async def live_token(request: Request):
     user = eo_auth.require_admin(request)
     return {"token": eo_auth.issue_live_token(user)}
+
+
+# ---------------------------------------------------------------------------------------
+# Subscription (the client's plan and usage)
+# ---------------------------------------------------------------------------------------
+@router.get("/subscription")
+async def subscription_get(request: Request):
+    user = eo_auth.require_admin(request)
+    return JSONResponse(subscription.snapshot(user))
+
+
+@router.put("/subscription")
+async def subscription_put(request: Request):
+    """Override the .env plan (service provider only). {"reset": true} goes back to .env."""
+    user = eo_auth.require_superadmin(request)
+    body = await _body(request)
+    if body.get("reset"):
+        eo_db.delete_setting(subscription.SETTING_KEY)
+        audit.log("subscription_reset", user=user, request=request)
+    else:
+        try:
+            clean = subscription.validate(body)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if not clean:
+            raise HTTPException(status_code=400, detail="Nothing to save")
+        eo_db.set_setting(subscription.SETTING_KEY, clean, updated_by=user["username"])
+        audit.log("subscription_updated", user=user, detail=clean, request=request)
+    return JSONResponse(subscription.snapshot(user))
 
 
 # ---------------------------------------------------------------------------------------

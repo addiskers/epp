@@ -292,23 +292,22 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--green); 
 .grid.halves { grid-template-columns: 1fr 1fr; }
 .fixed-bar { position: fixed; left: var(--sidebar-w); right: 0; bottom: 0; }
 
-/* Phones and small tablets: the sidebar becomes a top bar with a scrolling nav */
+/* The ☰ button lives in the topbar and only shows on small screens */
+.menu-btn { display: none; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; font-size: 1.2rem; line-height: 1; }
+.drawer-backdrop { display: none; }
+
+/* Phones and small tablets: the sidebar becomes a drawer that slides in from the ☰ button */
 @media (max-width: 900px) {
   .shell { flex-direction: column; }
   .sidebar {
-    width: 100%; flex: none; height: auto; position: sticky; top: 0; z-index: 30;
-    flex-direction: row; align-items: center; gap: 4px; overflow-x: auto;
-    border-right: 0; border-bottom: 1px solid var(--border);
+    position: fixed; top: 0; left: 0; bottom: 0; height: 100vh; width: min(82vw, 300px); flex: none;
+    z-index: 60; transform: translateX(-105%); transition: transform .18s ease-out; box-shadow: var(--shadow-lg);
   }
-  .brand { padding: 8px 10px; flex: 0 0 auto; }
-  .brand .sub, .brand .name { display: none; }
-  .nav { flex-direction: row; flex: 1 1 auto; overflow-x: auto; overflow-y: hidden; padding: 6px 4px; }
-  .nav a { white-space: nowrap; padding: 7px 9px; gap: 6px; font-size: 0.78rem; }
-  .nav a.active::before { display: none; }
-  .sidebar-foot { margin: 0; border: 0; padding: 6px; flex: 0 0 auto; }
-  .sidebar-foot .btn { height: 32px; padding: 0 10px; font-size: 0.74rem; }
-  .sidebar-foot .btn span, .sidebar-foot .btn svg + * { display: none; }
-  .topbar { padding: 0 12px; height: 50px; }
+  .sidebar.open { transform: translateX(0); }
+  .drawer-backdrop { display: block; position: fixed; inset: 0; background: rgba(4,6,10,.55); z-index: 55; animation: fade .12s ease-out; }
+  .menu-btn { display: inline-flex; }
+  .nav a { padding: 12px 11px; font-size: 0.9rem; }
+  .topbar { padding: 0 12px; height: 52px; gap: 10px; }
   .topbar .page-sub { display: none; }
   .content { padding: 12px; }
   .page-head { flex-direction: column; gap: 10px; }
@@ -319,12 +318,29 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--green); 
   .toolbar input, .toolbar select { min-width: 0; flex: 1 1 45%; }
   .search { flex: 1 1 100%; }
   .search input { min-width: 0; width: 100%; }
-  .table-wrap.tall { height: auto; max-height: 70vh; }
+  .table-wrap.tall { height: auto; max-height: 65vh; }
   table { font-size: 0.8rem; }
   thead th, tbody td { padding-left: 10px; padding-right: 10px; }
   .modal { max-width: 100%; padding: 16px; }
   .fixed-bar { left: 0; padding: 10px 12px !important; }
   .panel, .card { padding: 14px; }
+  /* touch: 16px inputs stop iOS from zooming on focus; buttons and boxes big enough for a thumb */
+  input, select, textarea { font-size: 16px; }
+  .btn.sm, .pager button { min-height: 40px; }
+  input[type="checkbox"] { width: 20px; height: 20px; }
+}
+
+/* Phones: one stat per row, and the list tables become stacked cards that name each value */
+@media (max-width: 600px) {
+  .stat-grid { grid-template-columns: 1fr; }
+  table.cards, table.cards tbody, table.cards tr, table.cards td { display: block; width: 100%; }
+  table.cards thead { display: none; }
+  table.cards tr { border-top: 1px solid var(--border); padding: 10px 12px; }
+  table.cards tr:first-child { border-top: 0; }
+  table.cards td { border: 0; padding: 3px 0; text-align: left !important; display: flex; gap: 10px; align-items: baseline; }
+  table.cards td::before { content: attr(data-label); flex: 0 0 88px; font-size: 0.64rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+  table.cards td.empty { display: block; }
+  table.cards td.empty::before { content: none; }
 }
 
 /* Misc */

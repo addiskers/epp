@@ -1,4 +1,5 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth.jsx'
 import {
   IconDashboard, IconTicket, IconRouting, IconAgent, IconLogs, IconUsers, IconAudit, IconUser, IconLogout,
@@ -17,6 +18,7 @@ const ADMIN_NAV = [
   { to: '/call-logs', label: 'Call Logs', icon: IconLogs, page: 'call-logs' },
   { to: '/users', label: 'Users', icon: IconUsers, page: 'users' },
   { to: '/audit', label: 'Audit Log', icon: IconAudit, page: 'audit' },
+  { to: '/subscription', label: 'Subscription', icon: IconClock, page: 'subscription' },
 ]
 
 const DEPT_NAV = [
@@ -34,7 +36,11 @@ function initials(name, username) {
 export default function Layout() {
   const { user, isAdmin, logout, isHidden } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
+  const [open, setOpen] = useState(false)          // the drawer on small screens
   const nav = (isAdmin ? ADMIN_NAV : DEPT_NAV).filter((n) => !isHidden(n.page))
+
+  useEffect(() => { setOpen(false) }, [location.pathname])   // navigating closes the drawer
 
   function doLogout() {
     logout()
@@ -43,7 +49,8 @@ export default function Layout() {
 
   return (
     <div className="shell">
-      <aside className="sidebar">
+      {open && <div className="drawer-backdrop" onClick={() => setOpen(false)} />}
+      <aside className={`sidebar${open ? ' open' : ''}`}>
         <div className="brand">
           <div className="logo">EPP</div>
           <div>
@@ -53,7 +60,7 @@ export default function Layout() {
         </div>
         <nav className="nav">
           {nav.map((n) => (
-            <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => (isActive ? 'active' : '')}>
+            <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => (isActive ? 'active' : '')} onClick={() => setOpen(false)}>
               <n.icon />
               <span>{n.label}</span>
             </NavLink>
@@ -68,6 +75,7 @@ export default function Layout() {
 
       <div className="main">
         <header className="topbar">
+          <button className="menu-btn" aria-label="Menu" onClick={() => setOpen((o) => !o)}>☰</button>
           <div id="topbar-title" />
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginLeft: 'auto' }}>
             <NavLink to="/profile" className="userchip" title="My profile">

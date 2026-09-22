@@ -17,6 +17,7 @@ import Campaigns from './pages/Campaigns.jsx'
 import CampaignDetail from './pages/CampaignDetail.jsx'
 import CreateCampaign from './pages/CreateCampaign.jsx'
 import Scheduler from './pages/Scheduler.jsx'
+import Subscription from './pages/Subscription.jsx'
 
 // `page` names an admin page the server may hide (EPP_HIDDEN_PAGES); a hidden page is
 // unreachable by URL as well as missing from the menu.
@@ -49,6 +50,7 @@ export default function App() {
         <Route path="/call-logs" element={<Protected adminOnly page="call-logs"><CallLogsPage /></Protected>} />
         <Route path="/users" element={<Protected adminOnly page="users"><Users /></Protected>} />
         <Route path="/audit" element={<Protected adminOnly page="audit"><AuditLog /></Protected>} />
+        <Route path="/subscription" element={<Protected adminOnly page="subscription"><Subscription /></Protected>} />
         <Route path="/profile" element={<Profile />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
