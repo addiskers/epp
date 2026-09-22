@@ -165,3 +165,25 @@ def test_recipient_call_endpoint_returns_the_call_record(client, fresh_eo_db):
     r = client.get(f"/api/epp/campaigns/{c['id']}/contacts/{cc['id']}/call", headers=h)
     assert r.status_code == 200 and r.json()["id"] == "rec1" and r.json()["messages"][0]["text"] == "hi"
     assert client.get(f"/api/epp/campaigns/999/contacts/{cc['id']}/call", headers=h).status_code == 404
+
+
+def test_recipient_with_a_scheduled_retry_renders_on_both_pages(client, fresh_eo_db):
+    """A retry row (pending, attempted once, next_attempt_at in the future) crashed the campaign
+    detail and the scheduler queue with NameError: _parse_iso — no test had ever created one."""
+    h = _login(client, "admin", ADMIN_PASS)
+    cid = client.post("/api/epp/contacts", headers=h, json={"name": "A", "phone": "9000000001"}).json()["id"]
+    c = client.post("/api/epp/campaigns", headers=h, json={"name": "R", "campaign_type": "intake",
+                                                           "contact_ids": [cid], "start_at": FUTURE}).json()
+    cc = client.get(f"/api/epp/campaigns/{c['id']}/contacts", headers=h).json()["items"][0]
+    fresh_eo_db.cc_update(cc["id"], attempts=1, call_status="pending", last_error="no answer",
+                          last_attempt_at="2026-09-22T05:00:00+00:00", next_attempt_at="2999-01-01T00:00:00+00:00")
+    r = client.get(f"/api/epp/campaigns/{c['id']}/contacts", headers=h)
+    assert r.status_code == 200
+    row = r.json()["items"][0]
+    assert row["display_status"] == "Retry scheduled — no answer" and row["display_variant"] == "amber"
+    q = client.get("/api/epp/scheduler/queue", headers=h)
+    assert q.status_code == 200 and q.json()["items"][0]["display_status"] == "Retry scheduled — no answer"
+    # a past-due retry on a scheduled (not live) campaign explains itself instead of crashing
+    fresh_eo_db.cc_update(cc["id"], next_attempt_at="2020-01-01T00:00:00+00:00")
+    row = client.get(f"/api/epp/campaigns/{c['id']}/contacts", headers=h).json()["items"][0]
+    assert row["display_status"] == "Waiting — campaign not active"

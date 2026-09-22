@@ -752,6 +752,17 @@ def _outcome_label(value):
     return _OUTCOME_LABELS.get(value, (value, "amber"))[0] if value else None
 
 
+def _parse_iso(value):
+    """ISO-8601 -> aware datetime, or None for blank/unparseable (a retry with no due time)."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
 def _contact_display(cc, campaign=None, runner_on=True, now=None, now_min=None):
     """Human status for a campaign_contacts row: (display_status, display_variant).
     Explains WHY a past-due retry isn't dialing instead of showing a stale 'Pending'."""
