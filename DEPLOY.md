@@ -116,25 +116,31 @@ method **GET**. Assign the app to the helpline number. Ring the number: the log 
 `https://epp.globalvoxinc.ai/admin` with `EPP_ADMIN_USER` / `EPP_ADMIN_PASS`. Change the
 password on Profile, then follow **First run** below.
 
-### 7. Their own domain (when the client shares it)
+### 7. The client's domain: `grievance.epp.world`
 
-The client's DNS: an **A record** for their host (say `helpline.client.com`) → the VM's static
-IP (`34.51.97.171` today; `gcloud compute addresses list` confirms). Then on the VM:
+The client's DNS already has an **A record** `grievance.epp.world` → `34.51.97.171` (the VM's
+static IP; `gcloud compute addresses list` confirms). Serve it next to the old name, so nothing
+breaks while Plivo is switched over. On the VM:
 
 ```bash
 sudo tee /etc/caddy/Caddyfile >/dev/null <<'EOF'
-epp.globalvoxinc.ai, helpline.client.com {
+epp.globalvoxinc.ai, grievance.epp.world {
     reverse_proxy localhost:8000
 }
 EOF
-sudo systemctl reload caddy             # both hosts get certificates; both keep working
-sed -i 's#^PUBLIC_URL=.*#PUBLIC_URL=https://helpline.client.com#' ~/epp/.env
+sudo systemctl reload caddy             # fetches a certificate for grievance.epp.world; both hosts keep working
+curl -s https://grievance.epp.world/healthz   # must print {"ok":true,...} before you go on
+sed -i 's#^PUBLIC_URL=.*#PUBLIC_URL=https://grievance.epp.world#' ~/epp/.env
 cd ~/epp && docker compose up -d
 ```
 
-Then in Plivo (Voice → Applications) change the Answer URL to
-`https://helpline.client.com/plivo/answer`. Check from your laptop:
-`curl -s https://helpline.client.com/healthz` and `curl -s https://helpline.client.com/plivo/answer | head -3`.
+Then in Plivo (Voice → Applications → the helpline app) change the **Answer URL** to
+`https://grievance.epp.world/plivo/answer` and save. Check from your laptop:
+`curl -s https://grievance.epp.world/healthz` and
+`curl -s https://grievance.epp.world/plivo/answer | head -3` (XML whose `<Stream>` says
+`wss://grievance.epp.world/plivo/media-stream`), then ring the number. The client signs in at
+`https://grievance.epp.world/admin`. Keep `epp.globalvoxinc.ai` in the Caddyfile until a few
+real calls have gone through the new name; dropping it later is one line.
 
 ### 8. Going live: your account, the client's tabs, a clean slate
 
