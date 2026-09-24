@@ -616,6 +616,61 @@ def delete_setting(key: str) -> None:
     _exec("DELETE FROM settings WHERE key = ?", (str(key),))
 
 
+def data_counts() -> dict:
+    """What a go-live reset would remove, table by table."""
+    def n(table):
+        return int(_one(f"SELECT COUNT(*) c FROM {table}")["c"])
+    return {"tickets": n("tickets"), "ticket_events": n("ticket_events"), "audit": n("audit_log"),
+            "contacts": n("contacts"), "campaigns": n("campaigns")}
+
+
+def backup_db(dest_path: str) -> None:
+    """A consistent copy of the whole database (SQLite's online backup), taken before a reset."""
+    os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
+    src = get_conn()
+    with _lock:
+        dst = sqlite3.connect(dest_path)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+
+
+def wipe_data(tickets=False, audit=False, outbound=False) -> dict:
+    """Delete test data before go-live, in one transaction. Keeps users, departments,
+    categories, agents (and their versions) and settings. Wiping tickets also restarts the
+    numbering at 000001. Returns the rows removed per table."""
+    conn = get_conn()
+    out, sequences = {}, []
+    with _lock:
+        try:
+            if outbound:
+                out["campaign_contacts"] = conn.execute("DELETE FROM campaign_contacts").rowcount
+                out["campaigns"] = conn.execute("DELETE FROM campaigns").rowcount
+                out["contacts"] = conn.execute("DELETE FROM contacts").rowcount
+                sequences += ["campaign_contacts", "campaigns", "contacts"]
+            if tickets:
+                conn.execute("UPDATE campaign_contacts SET ticket_id = NULL WHERE ticket_id IS NOT NULL")
+                out["ticket_events"] = conn.execute("DELETE FROM ticket_events").rowcount
+                out["tickets"] = conn.execute("DELETE FROM tickets").rowcount
+                conn.execute("DELETE FROM ticket_sequences")
+                sequences.append("ticket_events")
+            if audit:
+                out["audit"] = conn.execute("DELETE FROM audit_log").rowcount
+                sequences.append("audit_log")
+            if sequences:
+                try:                                   # ids start again at 1 (campaign #1, not #37)
+                    conn.execute(f"DELETE FROM sqlite_sequence WHERE name IN ({','.join('?' * len(sequences))})",
+                                 tuple(sequences))
+                except sqlite3.OperationalError:
+                    pass                               # no AUTOINCREMENT row written yet
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return out
+
+
 def all_settings() -> dict:
     _ensure_settings_table()
     out = {}

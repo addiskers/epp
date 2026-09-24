@@ -129,6 +129,7 @@ label { font-size: 0.72rem; font-weight: 500; color: var(--secondary); display: 
 .nav a.active::before { content: ''; position: absolute; left: -10px; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--green); }
 .nav a .ic { width: 18px; height: 18px; flex: 0 0 18px; opacity: .85; }
 .nav a.active .ic { opacity: 1; }
+.nav .nav-tag { margin-left: auto; font-size: 0.6rem; text-transform: uppercase; letter-spacing: .05em; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
 .nav .group-label { font-size: 0.62rem; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); padding: 14px 11px 6px; }
 .sidebar-foot { margin-top: auto; padding: 12px; border-top: 1px solid var(--border); }
 

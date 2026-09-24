@@ -61,7 +61,7 @@ def test_ui_config_comes_from_the_env(client, monkeypatch):
     monkeypatch.setenv("EPP_HIDDEN_PAGES", "")
     assert client.get("/api/epp/me", headers=h).json()["ui"]["hidden_pages"] == []
     r = client.post("/api/epp/login", json={"username": "admin", "password": ADMIN_PASS})
-    assert r.json()["ui"] == {"hidden_pages": []}
+    assert r.json()["ui"] == {"hidden_pages": [], "client_hidden_pages": [], "superadmin": False}
 
 
 # ------------------------------------------------------------------ one Save on the ticket page

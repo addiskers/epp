@@ -90,9 +90,11 @@ all outbound dialing at once.
 | Users | Admins and department users; Edit opens a form with Save |
 | Audit log | Logins, config changes, ticket updates, every transcript / recording view, plus one row per call: `ticket_created` or `call_no_ticket` (with the reason) |
 | Subscription | Minutes purchased vs used (per phone call, rounded up), ₹ at the configured rate, plan period and licence; editable only by `EPP_SUPERADMIN_USERS` |
+| Super admin | Only for `EPP_SUPERADMIN_USERS` (the service provider): tick which tabs the client's admins see, and clear the test data before go-live (tickets, call logs + recordings, audit log, contacts + campaigns — backed up first) |
 
-Roles: **admin** sees everything; **dept_user** sees only tickets assigned to their department.
-`EPP_HIDDEN_PAGES` takes pages off the admin menu (default: the three outbound pages) without a rebuild.
+Roles: **admin** sees everything the super admin left on the menu; **dept_user** sees only tickets
+assigned to their department. The super admin always sees every tab, with the hidden ones tagged.
+`EPP_HIDDEN_PAGES` is only the starting list (default: the three outbound pages).
 
 ## Customising
 
@@ -121,6 +123,7 @@ Roles: **admin** sees everything; **dept_user** sees only tickets assigned to th
 | `WS /live/ws` | Live transcript feed for the dashboard (short-lived token) |
 | `WS /live/listen/{call_sid}` | Listen in on one live call: both sides as mono PCM16 8 kHz frames (admin, short-lived token; audited as `call_listened`) |
 | `GET/PUT /api/epp/subscription` | The plan and its usage (PUT: superadmins only) |
+| `GET /api/epp/superadmin`, `PUT …/superadmin/pages`, `POST …/superadmin/reset-data` | Super admin: the client's tabs, and the go-live data reset (superadmins only) |
 | `GET /healthz` | Liveness |
 
 ## Project structure

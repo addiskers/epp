@@ -1,0 +1,147 @@
+import { useEffect, useState } from 'react'
+import { api } from '../api.js'
+import { useAuth } from '../auth.jsx'
+import { ADMIN_NAV } from '../components/Layout.jsx'
+import PageHeader from '../components/PageHeader.jsx'
+
+// The service provider's page (EPP_SUPERADMIN_USERS only): which tabs the client's admins
+// see, and clearing the test data before go-live.
+const num = (n) => new Intl.NumberFormat('en-IN').format(Number(n || 0))
+const PARTS = [
+  { key: 'tickets', label: 'Tickets', what: (c) => `${num(c.tickets)} tickets and their timelines. New tickets start again at 000001.` },
+  { key: 'calls', label: 'Call logs and recordings', what: (c) => `${num(c.calls)} calls and ${num(c.recordings)} recordings. Minutes used on the Subscription page go back to 0.` },
+  { key: 'audit', label: 'Audit log', what: (c) => `${num(c.audit)} rows. The reset itself becomes the first new row.` },
+  { key: 'outbound', label: 'Contacts and campaigns', what: (c) => `${num(c.contacts)} contacts and ${num(c.campaigns)} campaigns.` },
+]
+
+export default function SuperAdmin() {
+  const { refresh } = useAuth()
+  const [d, setD] = useState(null)
+  const [err, setErr] = useState('')
+
+  const load = () => api.get('/superadmin').then((x) => { setD(x); setErr('') }).catch((e) => setErr(e.message))
+  useEffect(() => { load() }, [])
+
+  if (err && !d) return <div className="stack"><div className="err">{err}</div></div>
+  if (!d) return <div className="panel"><div className="muted">Loading…</div></div>
+
+  return (
+    <div className="stack">
+      <PageHeader title="Super admin" sub="Only the service provider's accounts see this page. What you set here applies to every admin the client has." />
+      {err && <div className="err">{err}</div>}
+      <TabsPanel d={d} onSaved={(x) => { setD(x); refresh() }} />
+      <ResetPanel d={d} onDone={(x) => setD(x)} />
+    </div>
+  )
+}
+
+function TabsPanel({ d, onSaved }) {
+  const pages = ADMIN_NAV.filter((n) => n.page && !n.superOnly)
+  const baseKey = d.client_hidden_pages.join(',')
+  const [hidden, setHidden] = useState(new Set(d.client_hidden_pages))
+  const [busy, setBusy] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [err, setErr] = useState('')
+  useEffect(() => { setHidden(new Set(d.client_hidden_pages)) }, [baseKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const base = new Set(d.client_hidden_pages)
+  const dirty = pages.some((p) => hidden.has(p.page) !== base.has(p.page))
+  const toggle = (page, visible) => setHidden((s) => { const n = new Set(s); if (visible) n.delete(page); else n.add(page); return n })
+
+  async function save(body) {
+    setBusy(true); setErr(''); setSaved(false)
+    try {
+      onSaved(await api.put('/superadmin/pages', body))
+      setSaved(true); setTimeout(() => setSaved(false), 2500)
+    } catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <div><h3>Tabs the client sees</h3>
+          <div className="muted" style={{ fontSize: '0.78rem', marginTop: 3 }}>
+            Ticked tabs appear in the menu of the client's admins. You always see every tab; hidden ones carry a "hidden" tag in your menu.
+          </div></div>
+        {saved && <span className="pill green">Saved ✓</span>}
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th className="no-sort" style={{ width: 70 }}>Visible</th><th className="no-sort">Tab</th><th className="no-sort">Note</th></tr></thead>
+          <tbody>
+            {['Dashboard', 'Tickets'].map((label) => (
+              <tr key={label}><td><input type="checkbox" checked disabled /></td><td>{label}</td><td className="muted" style={{ fontSize: '0.78rem' }}>Always shown</td></tr>
+            ))}
+            {pages.map((p) => (
+              <tr key={p.page} style={{ opacity: hidden.has(p.page) ? 0.6 : 1 }}>
+                <td><input type="checkbox" checked={!hidden.has(p.page)} onChange={(e) => toggle(p.page, e.target.checked)} /></td>
+                <td>{p.label}</td>
+                <td className="muted" style={{ fontSize: '0.78rem' }}>{hidden.has(p.page) ? 'Hidden from the client' : ''}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 12 }}>
+        <button className="btn" disabled={busy || !dirty} onClick={() => save({ hidden_pages: [...hidden] })}>{busy ? 'Saving…' : 'Save changes'}</button>
+        {dirty && !busy && <button className="btn ghost sm" onClick={() => setHidden(new Set(d.client_hidden_pages))}>Discard</button>}
+        {d.source === 'db' && !dirty && <button className="btn ghost sm" disabled={busy} onClick={() => save({ reset: true })}>Back to the .env default</button>}
+        <span className="muted" style={{ fontSize: '0.74rem' }}>{d.source === 'db' ? 'Set here.' : 'Coming from EPP_HIDDEN_PAGES in .env until you save.'}</span>
+      </div>
+      {err && <div className="err" style={{ marginTop: 10 }}>{err}</div>}
+    </div>
+  )
+}
+
+function ResetPanel({ d, onDone }) {
+  const [parts, setParts] = useState(new Set(PARTS.map((p) => p.key)))
+  const [word, setWord] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [result, setResult] = useState(null)
+  const c = d.counts
+  const can = parts.size > 0 && word === 'DELETE' && !busy && !d.live_calls
+  const toggle = (key, on) => setParts((s) => { const n = new Set(s); if (on) n.add(key); else n.delete(key); return n })
+
+  async function run() {
+    const names = PARTS.filter((p) => parts.has(p.key)).map((p) => p.label.toLowerCase()).join(', ')
+    if (!confirm(`Delete ${names} now? A backup is saved on the server first.`)) return
+    setBusy(true); setErr(''); setResult(null)
+    try {
+      const r = await api.post('/superadmin/reset-data', { confirm: word, parts: [...parts] })
+      setResult(r); setWord(''); onDone(r.state)
+    } catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="panel" style={{ borderColor: 'rgba(248,113,113,0.45)' }}>
+      <div className="panel-head">
+        <div><h3 style={{ color: '#fca5a5' }}>Clear test data before go-live</h3>
+          <div className="muted" style={{ fontSize: '0.78rem', marginTop: 3 }}>
+            Keeps users, departments, categories, the agent scripts, the plan and these settings.
+            A copy of the database is saved, and the call files are moved, into <span style={{ fontFamily: 'var(--mono)' }}>{d.backup_root}</span> first.
+          </div></div>
+      </div>
+      <div className="stack" style={{ gap: 10 }}>
+        {PARTS.map((p) => (
+          <label key={p.key} className="toggle" style={{ alignItems: 'flex-start' }}>
+            <input type="checkbox" checked={parts.has(p.key)} onChange={(e) => toggle(p.key, e.target.checked)} style={{ marginTop: 2 }} />
+            <span><b style={{ color: 'var(--text)' }}>{p.label}</b><br /><span className="muted">{p.what(c)}</span></span>
+          </label>
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 16 }}>
+        <input value={word} onChange={(e) => setWord(e.target.value)} placeholder="Type DELETE" style={{ width: 160 }} />
+        <button className="btn danger" disabled={!can} onClick={run}>{busy ? 'Deleting…' : 'Delete selected data'}</button>
+        {!!d.live_calls && <span style={{ color: 'var(--amber)', fontSize: '0.8rem' }}>A call is on the line. Wait until it ends.</span>}
+      </div>
+      {err && <div className="err" style={{ marginTop: 10 }}>{err}</div>}
+      {result && (
+        <div className="card" style={{ marginTop: 14, padding: 12, fontSize: '0.82rem' }}>
+          <b>Done.</b> Deleted: {result.parts.join(', ')}. Now {num(result.after.tickets)} tickets, {num(result.after.calls)} calls, {num(result.after.audit)} audit rows.
+          <div className="muted" style={{ marginTop: 4 }}>Backup: <span style={{ fontFamily: 'var(--mono)' }}>{result.backup}</span></div>
+        </div>
+      )}
+    </div>
+  )
+}

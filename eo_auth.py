@@ -223,7 +223,7 @@ def is_superadmin(user: dict) -> bool:
 def require_superadmin(request: Request) -> dict:
     user = require_admin(request)
     if not is_superadmin(user):
-        raise HTTPException(status_code=403, detail="Only the service provider can change the plan")
+        raise HTTPException(status_code=403, detail="Only the service provider's accounts (EPP_SUPERADMIN_USERS) can do this")
     return user
 
 

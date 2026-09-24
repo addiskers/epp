@@ -18,15 +18,18 @@ import CampaignDetail from './pages/CampaignDetail.jsx'
 import CreateCampaign from './pages/CreateCampaign.jsx'
 import Scheduler from './pages/Scheduler.jsx'
 import Subscription from './pages/Subscription.jsx'
+import SuperAdmin from './pages/SuperAdmin.jsx'
 
-// `page` names an admin page the server may hide (EPP_HIDDEN_PAGES); a hidden page is
-// unreachable by URL as well as missing from the menu.
-function Protected({ children, adminOnly, page }) {
-  const { user, ready, isAdmin, isHidden } = useAuth()
+// `page` names an admin page the super admin may hide from the client; a hidden page is
+// unreachable by URL as well as missing from the menu. `superOnly` pages exist only for the
+// service provider's accounts (EPP_SUPERADMIN_USERS).
+function Protected({ children, adminOnly, page, superOnly }) {
+  const { user, ready, isAdmin, isHidden, isSuperadmin } = useAuth()
   const loc = useLocation()
   if (!ready) return <div className="center">Loading…</div>
   if (!user) return <Navigate to="/login" replace state={{ from: loc.pathname }} />
   if (adminOnly && !isAdmin) return <Navigate to="/" replace />
+  if (superOnly && !isSuperadmin) return <Navigate to="/" replace />
   if (isHidden(page)) return <Navigate to="/" replace />
   return children
 }
@@ -51,6 +54,7 @@ export default function App() {
         <Route path="/users" element={<Protected adminOnly page="users"><Users /></Protected>} />
         <Route path="/audit" element={<Protected adminOnly page="audit"><AuditLog /></Protected>} />
         <Route path="/subscription" element={<Protected adminOnly page="subscription"><Subscription /></Protected>} />
+        <Route path="/superadmin" element={<Protected adminOnly superOnly><SuperAdmin /></Protected>} />
         <Route path="/profile" element={<Profile />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

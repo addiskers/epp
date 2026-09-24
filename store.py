@@ -152,6 +152,34 @@ def call_metas():
         return [dict(m) for m in _INDEX.values()]
 
 
+def recording_count() -> int:
+    try:
+        return sum(1 for n in os.listdir(RECORDINGS_DIR) if n.endswith(".wav"))
+    except FileNotFoundError:
+        return 0
+
+
+def _archive_sync(dest_dir):
+    """Move every call record and recording into dest_dir (a go-live reset keeps them as a
+    backup instead of deleting them), leave empty folders behind, and empty the index."""
+    import shutil
+    moved = {"calls": 0, "recordings": 0}
+    os.makedirs(dest_dir, exist_ok=True)
+    for key, src in (("calls", CALLS_DIR), ("recordings", RECORDINGS_DIR)):
+        if os.path.isdir(src):
+            moved[key] = sum(1 for n in os.listdir(src) if not n.endswith(".tmp"))
+            shutil.move(src, os.path.join(dest_dir, key))
+        os.makedirs(src, exist_ok=True)
+    with _LOCK:
+        _INDEX.clear()
+    logger.warning(f"Call store archived to {dest_dir}: {moved['calls']} call(s), {moved['recordings']} recording(s)")
+    return moved
+
+
+async def archive_calls(dest_dir):
+    return await _run(_archive_sync, dest_dir)
+
+
 def _date_of(meta):
     s = meta.get("started_at") or ""
     return s[:10]

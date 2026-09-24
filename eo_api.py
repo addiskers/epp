@@ -28,6 +28,7 @@ import eo_auth
 import eo_db
 import languages
 import prompt_render
+import data_reset
 import routing
 import store
 import subscription
@@ -92,20 +93,36 @@ def _user_public(user):
             "department_name": (dep or {}).get("name")}
 
 
-# Admin pages the operator can take off the menu without a rebuild: EPP_HIDDEN_PAGES is a
-# comma-separated list of these keys (blank = show everything). The routes stay wired, so
-# turning a page back on is an .env edit and a restart.
+# Admin pages that can be taken off the client's menu. The super admin picks them on the Super
+# admin page (stored in settings["hidden_pages"]); until then EPP_HIDDEN_PAGES decides (a
+# comma-separated list of these keys; blank = show everything). The super admin always sees
+# every page, with the hidden ones marked. The routes stay wired either way.
 UI_PAGES = ("campaigns", "contacts", "scheduler", "routing", "agents", "call-logs", "users", "audit",
             "subscription")
 _DEFAULT_HIDDEN_PAGES = "campaigns,contacts,scheduler"
 
 
-def ui_config() -> dict:
+def client_hidden_pages() -> tuple:
+    """(hidden page keys for the client's admins, 'db' | 'env')."""
+    try:
+        stored = eo_db.get_setting("hidden_pages")
+    except Exception:
+        stored = None
+    if isinstance(stored, list):
+        wanted = {str(p).strip().lower() for p in stored}
+        return [p for p in UI_PAGES if p in wanted], "db"
     raw = os.getenv("EPP_HIDDEN_PAGES")
     if raw is None:
         raw = _DEFAULT_HIDDEN_PAGES
-    wanted = [p.strip().lower() for p in raw.split(",") if p.strip()]
-    return {"hidden_pages": [p for p in UI_PAGES if p in wanted]}
+    wanted = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return [p for p in UI_PAGES if p in wanted], "env"
+
+
+def ui_config(user=None) -> dict:
+    hidden, _source = client_hidden_pages()
+    superadmin = eo_auth.is_superadmin(user)
+    return {"hidden_pages": [] if superadmin else hidden, "client_hidden_pages": hidden,
+            "superadmin": superadmin}
 
 
 # ---------------------------------------------------------------------------------------
@@ -120,7 +137,7 @@ async def login(request: Request):
         audit.log("login_failed", user={"username": username}, request=request)
         raise HTTPException(status_code=401, detail="Invalid username or password")
     audit.log("login", user=user, request=request)
-    return {"ok": True, "token": eo_auth.issue_token(user), "user": _user_public(user), "ui": ui_config()}
+    return {"ok": True, "token": eo_auth.issue_token(user), "user": _user_public(user), "ui": ui_config(user)}
 
 
 @router.post("/logout")
@@ -136,7 +153,7 @@ async def logout(request: Request):
 @router.get("/me")
 async def me(request: Request):
     user = eo_auth.require_user(request)
-    return {"ok": True, "user": _user_public(user), "ui": ui_config()}
+    return {"ok": True, "user": _user_public(user), "ui": ui_config(user)}
 
 
 @router.post("/me/password")
@@ -630,6 +647,58 @@ def _gemini_status():
 async def live_token(request: Request):
     user = eo_auth.require_admin(request)
     return {"token": eo_auth.issue_live_token(user)}
+
+
+# ---------------------------------------------------------------------------------------
+# Super admin (the service provider): the client's menu, and clearing test data
+# ---------------------------------------------------------------------------------------
+def _superadmin_state() -> dict:
+    hidden, source = client_hidden_pages()
+    return {"pages": list(UI_PAGES), "client_hidden_pages": hidden, "source": source,
+            "counts": data_reset.counts(), "live_calls": len(_active_calls()),
+            "backup_root": data_reset.backup_root()}
+
+
+@router.get("/superadmin")
+async def superadmin_get(request: Request):
+    eo_auth.require_superadmin(request)
+    return JSONResponse(_superadmin_state())
+
+
+@router.put("/superadmin/pages")
+async def superadmin_pages(request: Request):
+    """Which pages the client's admins see. {"hidden_pages": [...]} or {"reset": true} (back to .env)."""
+    user = eo_auth.require_superadmin(request)
+    body = await _body(request)
+    if body.get("reset"):
+        eo_db.delete_setting("hidden_pages")
+        audit.log("client_pages_reset", user=user, request=request)
+    else:
+        raw = body.get("hidden_pages")
+        if not isinstance(raw, list):
+            raise HTTPException(status_code=400, detail="hidden_pages must be a list of page keys")
+        wanted = {str(p).strip().lower() for p in raw}
+        clean = [p for p in UI_PAGES if p in wanted]
+        eo_db.set_setting("hidden_pages", clean, updated_by=user["username"])
+        audit.log("client_pages_updated", user=user, detail={"hidden_pages": clean}, request=request)
+    return JSONResponse(_superadmin_state())
+
+
+@router.post("/superadmin/reset-data")
+async def superadmin_reset_data(request: Request):
+    """Delete test data before go-live (backed up first). Body: {"confirm": "DELETE",
+    "parts": ["tickets", "calls", "audit", "outbound"]}. Refused while a call is on the line."""
+    user = eo_auth.require_superadmin(request)
+    body = await _body(request)
+    if str(body.get("confirm") or "").strip() != "DELETE":
+        raise HTTPException(status_code=400, detail="Type DELETE to confirm")
+    if _active_calls():
+        raise HTTPException(status_code=409, detail="A call is on the line right now. Try again when it has ended.")
+    try:
+        result = await data_reset.reset(body.get("parts"), user)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(dict(result, state=_superadmin_state()))
 
 
 # ---------------------------------------------------------------------------------------

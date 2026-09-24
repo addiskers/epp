@@ -136,12 +136,28 @@ Then in Plivo (Voice → Applications) change the Answer URL to
 `https://helpline.client.com/plivo/answer`. Check from your laptop:
 `curl -s https://helpline.client.com/healthz` and `curl -s https://helpline.client.com/plivo/answer | head -3`.
 
+### 8. Going live: your account, the client's tabs, a clean slate
+
+1. On Users, create **your own** admin (say `globalvox`), separate from the admin you hand to
+   the client. Put it in `.env`: `EPP_SUPERADMIN_USERS=globalvox`, then `docker compose up -d`.
+2. Sign in as `globalvox`. The menu now has **Super admin**.
+3. **Tabs the client sees**: tick the tabs, Save changes. You still see every tab; the ones the
+   client does not see carry a "hidden" tag in your menu.
+4. **Clear test data before go-live**: tick what to delete (tickets, call logs and recordings,
+   audit log, contacts and campaigns), type `DELETE`, press the button. It refuses while a call
+   is on the line. Users, departments, categories, the agent scripts and the plan stay. New
+   tickets start again at `…-000001` and the Subscription page's minutes go back to 0.
+5. Nothing is thrown away: the database is copied and the call files are moved into
+   `/var/epp-data/backups/before-reset-<date-time>/` first. To undo, stop the app and put
+   `epp.db`, `calls/` and `recordings/` from that folder back into `/var/epp-data/`. Delete old
+   backup folders yourself when you no longer need them.
+
 ### Day-2
 
 | Task | Command |
 |---|---|
 | Update to the latest code | `cd ~/epp && git pull && docker compose up -d --build`. The shipped script applies itself on boot when nobody edited it (log: `shipped script updated`, the old text is kept in `agent_versions`). An edited script is left alone and logs `STALE AGENT PROMPT` if it is behind — reset it on the Agent page, which also switches it back to automatic updates. |
-| Hide or show admin pages | Edit `EPP_HIDDEN_PAGES` in `.env` (keys: campaigns, contacts, scheduler, routing, agents, call-logs, users, audit, subscription), then `docker compose up -d`. No rebuild. |
+| Hide or show admin pages | Super admin page → Tabs the client sees → Save. `EPP_HIDDEN_PAGES` in `.env` is only the starting list until then. |
 | Set the client's plan | `EPP_PLAN_*` and `EPP_RATE_INR_PER_MIN` in `.env` (or override it on the Subscription page as a user listed in `EPP_SUPERADMIN_USERS`) |
 | Logs | `docker compose logs -f --tail=200` |
 | Restart | `docker compose restart` |
@@ -244,9 +260,9 @@ Re-run `npm run build` after any SPA change — FastAPI serves the built `admin/
 | `EPP_ENABLED_LANGUAGES` | Switch off any language that fails the live-call check below. |
 | `MAX_LIVE_CALLS` | Simultaneous live calls, inbound **and** campaign together (default 10). Each is a Gemini session plus telephony. |
 | `EPP_CAMPAIGN_*` | Campaign pacing and retries; see `.env.example`. The Scheduler page's ON/OFF switch is the fastest way to stop all outbound dialing (it survives restarts). |
-| `EPP_HIDDEN_PAGES` | Admin pages off the menu and unreachable by URL. Default `campaigns,contacts,scheduler`; blank shows everything. |
+| `EPP_HIDDEN_PAGES` | Starting list of admin pages hidden from the client. Default `campaigns,contacts,scheduler`; blank shows everything. The Super admin page overrides it once saved. |
 | `EPP_PLAN_NAME` / `EPP_PLAN_MINUTES` / `EPP_PLAN_START` / `EPP_PLAN_END` / `EPP_LICENCE_VALID_TILL` / `EPP_RATE_INR_PER_MIN` | The Subscription page: what the client bought. Minutes count per phone call rounded up, inside the period (IST dates). |
-| `EPP_SUPERADMIN_USERS` | Usernames that may override the plan from the page. Blank = read-only for everyone. |
+| `EPP_SUPERADMIN_USERS` | Your own admin login(s): they get the Super admin page (client tabs, go-live data reset) and can edit the plan. Never the account the client uses. Blank = nobody. |
 | `DATA_DIR` | Leave blank under compose — it sets `/var/epp-data` (the persistent volume). |
 
 ---
